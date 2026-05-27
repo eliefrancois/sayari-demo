@@ -25,6 +25,8 @@ build/
 *.env
 !.env.example
 !*.env.example
+!.env.local.example
+!*.env.local.example
 
 # OS
 .DS_Store
