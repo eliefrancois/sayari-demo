@@ -276,7 +276,8 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
     as tool_result content). Wraps errors so a bad tool call doesn't crash the
     agent loop — Claude can read the error and decide what to do.
     """
-    log.info("tool_call", extra={"tool": name, "args": arguments})
+    # 'args' is reserved on LogRecord (printf-style logging) — use tool_args.
+    log.info("tool_call", extra={"tool": name, "tool_args": arguments})
     try:
         if name == "check_sanctions":
             result = await check_sanctions_tool(**arguments)
