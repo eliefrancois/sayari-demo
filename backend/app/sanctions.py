@@ -1,0 +1,119 @@
+"""OpenSanctions data layer.
+
+Thin async client over the public /match/default endpoint. We use this to
+answer one question per call: "does this name appear on any global sanctions,
+PEP, debarment, or watchlist?"
+
+Why async: the agent loop is async (so we can stream events back over SSE
+without blocking). A blocking httpx.get() would freeze the whole investigation
+during what's typically a 200-500ms call.
+
+Why no retries / no exotic error handling in v1: OpenSanctions is reliable
+enough that exceptions are signal, not noise. We log and return an empty
+list rather than fail the whole investigation — a missing sanctions check
+is recoverable; a thrown exception kills the entire SSE stream.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import httpx
+
+from app.config import get_settings
+from app.schema import SanctionsHit
+
+log = logging.getLogger("erre.sanctions")
+
+# Where matches typically live. OpenSanctions has dozens of datasets but these
+# are the watchlist-style ones our risk_signals care about. Used to derive the
+# `lists` field shown in the UI.
+_WATCHLIST_DATASETS = {
+    "sanctions",
+    "us_ofac_sdn",
+    "us_ofac_cons",
+    "us_sam_exclusions",
+    "us_trade_csl",
+    "eu_fsf",
+    "eu_meps",
+    "gb_hmt_sanctions",
+    "ua_nsdc_sanctions",
+    "ca_dfatd_sema_sanctions",
+    "ch_seco_sanctions",
+    "au_dfat_sanctions",
+    "jp_mof_sanctions",
+    "un_sc_sanctions",
+    "interpol_red_notices",
+    "mc_fund_freezes",
+}
+
+# Below this score, OpenSanctions itself considers the match "weak" — surface
+# in the response but tag as low-confidence so the agent can decide.
+_STRONG_MATCH_SCORE = 0.70
+
+
+def _classify_datasets(datasets: list[str]) -> tuple[list[str], bool]:
+    """Return (human_readable_list_names, is_actual_watchlist_hit).
+
+    The PEP / wikidata / company-registry hits are interesting but NOT the
+    same as "this person is sanctioned". Separate so the agent can phrase
+    its findings honestly.
+    """
+    on_watchlist = any(d in _WATCHLIST_DATASETS for d in datasets)
+    pretty = [d for d in datasets if d in _WATCHLIST_DATASETS] or datasets[:3]
+    return pretty, on_watchlist
+
+
+async def check_sanctions(name: str, schema: str = "Person") -> list[SanctionsHit]:
+    """Look up `name` against OpenSanctions /match/default.
+
+    Args:
+        name: Subject's full name as known.
+        schema: OpenSanctions entity schema. "Person" for individuals,
+                "Organization" or "Company" for entities. Default Person
+                because most agent calls are on Officers.
+
+    Returns:
+        List of SanctionsHit, ordered by score desc. Empty list if no
+        matches or on network error (logged, not raised).
+    """
+    s = get_settings()
+    url = f"{s.opensanctions_api_url}/match/default"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"ApiKey {s.opensanctions_api_key}",
+    }
+    payload = {"queries": {"q1": {"schema": schema, "properties": {"name": [name]}}}}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(url, json=payload, headers=headers)
+            r.raise_for_status()
+            body = r.json()
+    except httpx.HTTPError as e:
+        log.warning("sanctions_lookup_failed", extra={"name": name, "error": str(e)})
+        return []
+
+    results = body.get("responses", {}).get("q1", {}).get("results", [])
+    hits: list[SanctionsHit] = []
+    for m in results:
+        datasets = m.get("datasets", [])
+        lists, _is_watchlist = _classify_datasets(datasets)
+        hits.append(
+            SanctionsHit(
+                name_searched=name,
+                matched_name=m.get("caption", name),
+                lists=lists,
+                sanctions_id=m.get("id", ""),
+                score=float(m.get("score", 0.0)),
+                reason=("topics: " + ", ".join(m.get("topics", []))) if m.get("topics") else None,
+            )
+        )
+    hits.sort(key=lambda h: h.score, reverse=True)
+    return hits
+
+
+def is_strong_match(hit: SanctionsHit) -> bool:
+    """Helper so the agent can ask 'is this a confident sanctions hit?' instead
+    of hard-coding the threshold in the prompt."""
+    return hit.score >= _STRONG_MATCH_SCORE
