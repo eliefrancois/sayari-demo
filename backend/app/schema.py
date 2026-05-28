@@ -60,6 +60,13 @@ class SanctionsHit(BaseModel):
     reason: str | None = None
 
 
+class FollowupSuggestion(BaseModel):
+    """A suggested next investigation, surfaced to the user as a clickable pill."""
+
+    name: str  # the name to investigate (drops straight into /assess)
+    reason: str  # one-sentence rationale shown on hover
+
+
 class RiskSummary(BaseModel):
     """Final structured output of an investigation. The agent must return this shape."""
 
@@ -71,6 +78,7 @@ class RiskSummary(BaseModel):
     sanctions_hits: list[SanctionsHit]
     investigation_summary: str
     tools_used: list[str]
+    suggested_followups: list[FollowupSuggestion] = Field(default_factory=list)
 
 
 # --- Tool I/O types ---

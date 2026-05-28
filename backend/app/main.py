@@ -129,6 +129,30 @@ async def _safe_run(session_id: str, name: str) -> None:
             pass
 
 
+# ---------- Expand (manual graph exploration) ----------
+
+
+@app.get("/expand/{node_id:path}")
+async def expand(node_id: str, kind: str = "relationships") -> dict:
+    """Run one graph query and return the result directly (no SSE, no agent).
+
+    Used by the frontend's right-click "Expand" menu to let the user manually
+    traverse the graph after the agent's initial pass. `kind` picks the tool:
+      relationships | officers | address_connections | er_links
+    """
+    if kind == "relationships":
+        nb = graph.get_relationships(node_id, limit=50)
+    elif kind == "officers":
+        nb = graph.get_officers(node_id, limit=50)
+    elif kind == "address_connections":
+        nb = graph.find_address_connections(node_id, limit=25)
+    elif kind == "er_links":
+        nb = graph.find_er_links(node_id, limit=25)
+    else:
+        raise HTTPException(status_code=400, detail=f"unknown kind: {kind}")
+    return nb.model_dump()
+
+
 # ---------- Stream (SSE) ----------
 
 

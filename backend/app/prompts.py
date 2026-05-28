@@ -69,11 +69,18 @@ Call submit_summary with a complete RiskSummary. The fields:
 - entity_name: echo the user's input
 - entity_id: the node_id of the primary match, or null if not found
 - found: true if you identified the subject, false otherwise
-- claims: ordered, most important first, every one with source_refs
+- claims: ordered by confidence then importance: ALL high-confidence claims first,
+  then medium, then low. Every claim must have at least one source_ref.
 - risk_signals: bounded list from the taxonomy above
 - sanctions_hits: empty list if none
 - investigation_summary: 2-4 sentence narrative
 - tools_used: the names of the tools you called
+- suggested_followups: 2-4 follow-up investigations the user might want to pursue
+  next. Each is a (name, reason) pair where `name` is a real person or company
+  surfaced during this investigation (NOT the subject themselves) and `reason` is
+  one sentence explaining why it's worth digging into. Prefer co-officers,
+  intermediaries, and connected entities that scored interesting in your tool
+  calls. Empty list is acceptable if nothing else is worth investigating.
 """
 
 
@@ -157,6 +164,24 @@ SUBMIT_SUMMARY_TOOL = {
             },
             "investigation_summary": {"type": "string"},
             "tools_used": {"type": "array", "items": {"type": "string"}},
+            "suggested_followups": {
+                "type": "array",
+                "description": "2-4 follow-up investigations the user might pursue.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of a real person or company surfaced during the investigation (NOT the subject).",
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "One sentence explaining why this is worth investigating.",
+                        },
+                    },
+                    "required": ["name", "reason"],
+                },
+            },
         },
         "required": [
             "entity_name",
