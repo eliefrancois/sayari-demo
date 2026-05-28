@@ -30,7 +30,7 @@ from app.tools import TOOLS, execute_tool
 
 log = logging.getLogger("erre.agent")
 
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-sonnet-4-5-20250929"  # dated snapshot = reproducible demo behavior
 MAX_ITERATIONS = 20  # safety bail-out; real investigations finish in 6-12
 MAX_TOKENS_PER_TURN = 4096
 
