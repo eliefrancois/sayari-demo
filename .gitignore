@@ -38,6 +38,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Debug / scratch artifacts
+.triage/
+
 # Logs
 *.log
 npm-debug.log*

@@ -51,6 +51,32 @@ _WATCHLIST_DATASETS = {
 # in the response but tag as low-confidence so the agent can decide.
 _STRONG_MATCH_SCORE = 0.70
 
+# Human-readable, UNAMBIGUOUS labels for the datasets we surface. The model only
+# ever sees these labels (never the bare slug), so it cannot blur, e.g.,
+# `us_ofac_cons` into "OFAC SDN". The single most important distinction here is
+# OFAC SDN (blocked persons) vs OFAC Consolidated (non-SDN): conflating them is
+# a serious analyst error. Export-control / trade-screening lists are labeled as
+# such so they're never mistaken for OFAC blocking sanctions.
+_DATASET_LABELS = {
+    "us_ofac_sdn": "OFAC SDN List (Specially Designated Nationals — blocked persons)",
+    "us_ofac_cons": "OFAC Consolidated List (non-SDN, e.g. SSI/sectoral — NOT blocked)",
+    "us_sam_exclusions": "US SAM Exclusions (federal debarment — NOT OFAC)",
+    "us_trade_csl": "US Trade CSL (Consolidated Screening List — trade/export screening, incl. BIS Entity List)",
+    "us_bis_denied": "BIS Denied Persons List (US export controls — NOT OFAC)",
+    "us_bis_entities": "BIS Entity List (US export controls — NOT OFAC)",
+    "eu_fsf": "EU Financial Sanctions File (FSF)",
+    "eu_meps": "EU Members of Parliament (PEP context — NOT a sanction)",
+    "gb_hmt_sanctions": "UK HMT Sanctions",
+    "ua_nsdc_sanctions": "Ukraine NSDC Sanctions",
+    "ca_dfatd_sema_sanctions": "Canada SEMA Sanctions",
+    "ch_seco_sanctions": "Switzerland SECO Sanctions",
+    "au_dfat_sanctions": "Australia DFAT Sanctions",
+    "jp_mof_sanctions": "Japan MOF/METI Sanctions",
+    "un_sc_sanctions": "UN Security Council Consolidated Sanctions",
+    "interpol_red_notices": "INTERPOL Red Notices",
+    "mc_fund_freezes": "Monaco Asset Freezes",
+}
+
 
 def _classify_datasets(datasets: list[str]) -> tuple[list[str], bool]:
     """Return (human_readable_list_names, is_actual_watchlist_hit).
@@ -58,9 +84,14 @@ def _classify_datasets(datasets: list[str]) -> tuple[list[str], bool]:
     The PEP / wikidata / company-registry hits are interesting but NOT the
     same as "this person is sanctioned". Separate so the agent can phrase
     its findings honestly.
+
+    `lists` is mapped to explicit, unambiguous program labels (see
+    `_DATASET_LABELS`) precisely so the model reports the program VERBATIM and
+    cannot upgrade a non-SDN/Consolidated/Entity-List hit to "OFAC SDN".
     """
     on_watchlist = any(d in _WATCHLIST_DATASETS for d in datasets)
-    pretty = [d for d in datasets if d in _WATCHLIST_DATASETS] or datasets[:3]
+    chosen = [d for d in datasets if d in _WATCHLIST_DATASETS] or datasets[:3]
+    pretty = [_DATASET_LABELS.get(d, d) for d in chosen]
     return pretty, on_watchlist
 
 
@@ -98,7 +129,12 @@ async def check_sanctions(name: str, schema: str = "Person") -> list[SanctionsHi
     hits: list[SanctionsHit] = []
     for m in results:
         datasets = m.get("datasets", [])
-        lists, _is_watchlist = _classify_datasets(datasets)
+        lists, is_watchlist = _classify_datasets(datasets)
+        props = m.get("properties", {}) or {}
+        # OpenSanctions returns list-valued properties even for single values.
+        # We pass them through verbatim so the agent sees the same shape it
+        # would see in the OS UI — and can spot list mismatches like
+        # subject country=US but match countries=["ru", "lt"].
         hits.append(
             SanctionsHit(
                 name_searched=name,
@@ -106,7 +142,12 @@ async def check_sanctions(name: str, schema: str = "Person") -> list[SanctionsHi
                 lists=lists,
                 sanctions_id=m.get("id", ""),
                 score=float(m.get("score", 0.0)),
+                on_watchlist=is_watchlist,
                 reason=("topics: " + ", ".join(m.get("topics", []))) if m.get("topics") else None,
+                position=props.get("position") or None,
+                address=props.get("address") or None,
+                countries=props.get("country") or None,
+                birth_date=props.get("birthDate") or None,
             )
         )
     hits.sort(key=lambda h: h.score, reverse=True)
@@ -114,6 +155,9 @@ async def check_sanctions(name: str, schema: str = "Person") -> list[SanctionsHi
 
 
 def is_strong_match(hit: SanctionsHit) -> bool:
-    """Helper so the agent can ask 'is this a confident sanctions hit?' instead
-    of hard-coding the threshold in the prompt."""
-    return hit.score >= _STRONG_MATCH_SCORE
+    """A confident sanctions hit requires BOTH a high name-similarity score AND
+    membership on an actual watchlist dataset. Score alone is not enough: a
+    wikidata biographical entry or FINRA action can score 1.0 by name without
+    being a sanction. Without the watchlist gate, querying "Jeffrey Epstein"
+    flags his wikidata page as a 'strong sanctions match', which is wrong."""
+    return hit.score >= _STRONG_MATCH_SCORE and hit.on_watchlist

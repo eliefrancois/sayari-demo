@@ -1,74 +1,114 @@
 /**
- * SSE client for the Entity Risk Resolver agent stream.
+ * Conversation client for the Entity Risk Resolver.
  *
- * Browser EventSource is the standard primitive. We thin-wrap it to:
- *   - Do the POST /assess handshake first.
- *   - Subscribe to typed events via a callback object.
- *   - Surface close conditions (done | error | network failure) cleanly.
+ * Multi-turn flow:
+ *   1. createConversation()                         -> conversation_id
+ *   2. sendMessage(id, text, opts)                  -> { turn_index, event_cursor }
+ *   3. streamTurn(id, event_cursor, callbacks)      -> SSE for that turn
  *
- * Usage:
- *   const handle = startInvestigation("Sergey Roldugin", {
- *     onEvent: (evt) => console.log(evt),
- *     onClose: (reason) => console.log("closed:", reason),
- *   });
- *   // ... later:
- *   handle.close();
+ * Each turn appends to ONE server-side event list; the stream endpoint takes a
+ * `cursor` so a single list serves the whole thread. We open a fresh
+ * EventSource per turn (starting at the cursor returned by sendMessage) and let
+ * it close on the turn's `done`/`error`.
  */
 
-import type { StreamEvent, EventType } from "./types";
+import type {
+  StreamEvent,
+  EventType,
+  ExpandKind,
+  ExpandResponse,
+  ConversationHydrate,
+} from "./types";
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ||
   "https://sayari-demo-backend-610839754420.us-central1.run.app";
 
-export interface InvestigationHandle {
-  sessionId: string;
+export interface TurnHandle {
   close: () => void;
 }
 
-export interface InvestigationCallbacks {
-  /** Called once per inbound event, in receive order. */
+export interface TurnCallbacks {
   onEvent: (event: StreamEvent) => void;
-  /** Called exactly once when the stream terminates. */
   onClose?: (reason: "done" | "error" | "network" | "manual") => void;
 }
 
-/** All event types the backend can send. Used to bind EventSource listeners. */
+export interface SendMessageOptions {
+  pinnedNodeIds?: string[];
+  forceRiskReport?: boolean;
+}
+
 const EVENT_TYPES: EventType[] = [
   "agent_started",
   "agent_thought",
+  "token",
   "tool_call_start",
   "tool_call_result",
   "sanctions_hit",
+  "sanctions_review",
   "summary",
+  "answer",
   "error",
   "done",
 ];
 
-/**
- * Kick off an investigation and stream events to callbacks.
- *
- * The returned promise resolves once the handshake succeeds (we have a session_id)
- * and the SSE connection is open. After that, events arrive via the callbacks.
- */
-export async function startInvestigation(
-  name: string,
-  callbacks: InvestigationCallbacks
-): Promise<InvestigationHandle> {
-  // 1. POST /assess -> session_id
-  const resp = await fetch(`${BACKEND_URL}/assess`, {
+/** Create a new (empty) conversation. Returns its id. */
+export async function createConversation(): Promise<string> {
+  const resp = await fetch(`${BACKEND_URL}/conversations`, { method: "POST" });
+  if (!resp.ok) {
+    throw new Error(`/conversations failed: ${resp.status} ${await resp.text()}`);
+  }
+  const { conversation_id } = (await resp.json()) as { conversation_id: string };
+  return conversation_id;
+}
+
+/** Submit one user turn. Returns the turn index and the event cursor to stream from. */
+export async function sendMessage(
+  conversationId: string,
+  message: string,
+  opts: SendMessageOptions = {}
+): Promise<{ turnIndex: number; eventCursor: number }> {
+  const resp = await fetch(`${BACKEND_URL}/conversations/${conversationId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({
+      message,
+      pinned_node_ids: opts.pinnedNodeIds ?? [],
+      force_risk_report: opts.forceRiskReport ?? false,
+    }),
   });
   if (!resp.ok) {
-    throw new Error(`/assess failed: ${resp.status} ${await resp.text()}`);
+    throw new Error(`send message failed: ${resp.status} ${await resp.text()}`);
   }
-  const { session_id } = (await resp.json()) as { session_id: string };
+  const { turn_index, event_cursor } = (await resp.json()) as {
+    turn_index: number;
+    event_cursor: number;
+  };
+  return { turnIndex: turn_index, eventCursor: event_cursor };
+}
 
-  // 2. Open SSE on /stream/:id
-  const es = new EventSource(`${BACKEND_URL}/stream/${session_id}`);
+/** Open an SSE stream for the current turn, starting at `cursor`. */
+export function streamTurn(
+  conversationId: string,
+  cursor: number,
+  callbacks: TurnCallbacks
+): TurnHandle {
+  const es = new EventSource(
+    `${BACKEND_URL}/conversations/${conversationId}/stream?cursor=${cursor}`
+  );
   let closed = false;
+
+  // Idempotency across reconnects. The backend replays the event list from the
+  // original `cursor` on EVERY (re)connection — and the browser's EventSource
+  // silently auto-reconnects on transient drops — so without guarding we'd
+  // re-apply already-seen events (duplicate tool calls, doubled token text,
+  // repeated thoughts). The endpoint sets no SSE `id:`, so we can't lean on
+  // Last-Event-ID; instead we dedupe by position. Each connection re-emits the
+  // backend events in the same order, so the i-th backend event of any
+  // connection is always backend event `cursor + i`. We track a high-water mark
+  // of events already delivered and drop anything at or below it.
+  let highWater = 0; // count of backend events delivered to the callback
+  let connIndex = 0; // position within the current connection (reset on (re)open)
 
   const close = (reason: "done" | "error" | "network" | "manual") => {
     if (closed) return;
@@ -77,32 +117,86 @@ export async function startInvestigation(
     callbacks.onClose?.(reason);
   };
 
-  // Bind one listener per event type. EventSource dispatches by `event:` field;
-  // we wrap into our typed StreamEvent union before handing to onEvent.
-  EVENT_TYPES.forEach((type) => {
-    es.addEventListener(type, (ev: MessageEvent) => {
-      let data: unknown = {};
-      try {
-        data = JSON.parse(ev.data);
-      } catch {
-        // backend always sends valid JSON; if not, log and skip
-        console.warn("SSE: non-JSON data for event", type, ev.data);
-        return;
-      }
-      const evt = { type, data } as StreamEvent;
-      callbacks.onEvent(evt);
+  // A new (or resumed) connection replays from the original cursor.
+  es.addEventListener("open", () => {
+    connIndex = 0;
+  });
 
+  // Handle one real backend SSE message (a named event with a string payload).
+  const handleBackendEvent = (type: EventType, raw: string) => {
+    const pos = connIndex++;
+    if (pos < highWater) {
+      // Replayed on reconnect; already applied. Still honor terminal events so
+      // a stream that ends mid-replay tears down cleanly.
       if (type === "done") close("done");
       if (type === "error") close("error");
+      return;
+    }
+    highWater = pos + 1;
+
+    let data: unknown;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      if (type === "error") {
+        // The error payload isn't guaranteed to be JSON — treat the raw string
+        // as the message rather than throwing/logging spuriously.
+        data = { message: raw };
+      } else {
+        console.warn("SSE: non-JSON data for event", type, raw);
+        return;
+      }
+    }
+    callbacks.onEvent({ type, data } as StreamEvent);
+    if (type === "done") close("done");
+    if (type === "error") close("error");
+  };
+
+  EVENT_TYPES.forEach((type) => {
+    es.addEventListener(type, (ev: MessageEvent) => {
+      // The `error` listener is overloaded: the browser dispatches a
+      // connection-level Event here (with no `.data`) on every transient drop,
+      // in addition to the backend's application-level "error" SSE event (a
+      // MessageEvent carrying a payload). Only the latter has string data; let
+      // `onerror` deal with connection-level signals so we don't misparse them.
+      if (type === "error" && typeof ev.data !== "string") return;
+      handleBackendEvent(type, ev.data);
     });
   });
 
-  // EventSource onerror fires for both transient retries and permanent failures.
-  // We can't reliably distinguish them, so we close on the first error after
-  // a small grace period (lets the initial connection settle).
   es.onerror = () => {
+    // EventSource auto-reconnects unless it has permanently closed. Only treat
+    // a CLOSED socket as a network failure; otherwise let it resume (the
+    // position-based dedupe above keeps the replay idempotent).
     if (es.readyState === EventSource.CLOSED) close("network");
   };
 
-  return { sessionId: session_id, close: () => close("manual") };
+  return { close: () => close("manual") };
+}
+
+/** Full hydration payload for restoring a conversation (page reload / share). */
+export async function fetchConversation(
+  conversationId: string
+): Promise<ConversationHydrate> {
+  const resp = await fetch(`${BACKEND_URL}/conversations/${conversationId}`);
+  if (!resp.ok) {
+    throw new Error(`fetch conversation failed: ${resp.status} ${await resp.text()}`);
+  }
+  return (await resp.json()) as ConversationHydrate;
+}
+
+/**
+ * Manually expand a graph node via the backend's /expand endpoint (single
+ * Cypher query, no agent). Used by the right-click "Expand" menu.
+ */
+export async function expandNode(
+  nodeId: string,
+  kind: ExpandKind = "relationships"
+): Promise<ExpandResponse> {
+  const url = `${BACKEND_URL}/expand/${encodeURIComponent(nodeId)}?kind=${kind}`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`/expand failed: ${resp.status} ${await resp.text()}`);
+  }
+  return (await resp.json()) as ExpandResponse;
 }

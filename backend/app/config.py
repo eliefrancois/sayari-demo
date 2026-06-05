@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Literal
 
@@ -31,11 +32,42 @@ class Settings(BaseSettings):
     )
     opensanctions_api_key: str = Field(default="", alias="OPENSANCTIONS_API_KEY")
 
+    # Sayari Graph API. The SDK handles token rotation + 429 retry internally.
+    sayari_client_id: str = Field(default="", alias="SAYARI_CLIENT_ID")
+    sayari_client_secret: str = Field(default="", alias="SAYARI_CLIENT_SECRET")
+
     allowed_origins: str = Field(
         default="http://localhost:3000", alias="ALLOWED_ORIGINS"
     )
 
     agent_impl: Literal["native", "graph"] = Field(default="native", alias="AGENT_IMPL")
+
+    # Token-level streaming of the agent's text (reasoning narration + the final
+    # answer/summary narrative) over SSE. Only the LangGraph impl streams; the
+    # flag is a safety valve to fall back to whole-response emits if needed.
+    stream_tokens: bool = Field(default=True, alias="STREAM_TOKENS")
+
+    # Lightweight intent router: a cheap structured classification call BEFORE the
+    # main loop that labels the turn's intent, narrows the tool subset, and injects
+    # targeted guidance. The flag is a safety valve — off => full toolset, no
+    # router call. The model is a small/fast one so the added latency/credits are
+    # minimal relative to the Sonnet investigation loop.
+    intent_router_enabled: bool = Field(default=True, alias="INTENT_ROUTER_ENABLED")
+    intent_router_model: str = Field(
+        default="claude-haiku-4-5-20251001", alias="INTENT_ROUTER_MODEL"
+    )
+
+    # LangSmith tracing (only used by the LangGraph impl). When tracing is on and
+    # an API key is present, LangChain/LangGraph auto-trace every graph run, node,
+    # and LLM call — no manual span wiring needed for the graph path.
+    langchain_tracing_v2: bool = Field(default=False, alias="LANGCHAIN_TRACING_V2")
+    langchain_api_key: str = Field(default="", alias="LANGCHAIN_API_KEY")
+    langchain_project: str = Field(
+        default="entity-risk-resolver", alias="LANGCHAIN_PROJECT"
+    )
+    langchain_endpoint: str = Field(
+        default="https://api.smith.langchain.com", alias="LANGCHAIN_ENDPOINT"
+    )
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     port: int = Field(default=8080, alias="PORT")
@@ -43,6 +75,22 @@ class Settings(BaseSettings):
     @property
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
+
+def apply_langsmith_env(settings: "Settings") -> bool:
+    """Propagate LangSmith settings into os.environ.
+
+    LangChain reads LANGCHAIN_* from the process environment, but pydantic-
+    settings only loads them into the Settings object (especially when they come
+    from a .env file). Mirror them back so tracing turns on. Returns whether
+    tracing is active."""
+    if settings.langchain_tracing_v2 and settings.langchain_api_key:
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
+        os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
+        os.environ["LANGCHAIN_ENDPOINT"] = settings.langchain_endpoint
+        return True
+    return False
 
 
 @lru_cache

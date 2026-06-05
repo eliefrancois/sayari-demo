@@ -22,17 +22,28 @@ from typing import Any
 from anthropic import AsyncAnthropic
 from pydantic import ValidationError
 
-from app import sessions, tracing
+from app import intent, sessions, tracing
+from app.agent_common import (
+    MAX_ITERATIONS,
+    MAX_TOKENS_PER_TURN,
+    MODEL,
+    budget_nudge,
+    build_context_block,
+    build_sanctions_review,
+    build_turn_message,
+    digest_answer,
+    digest_summary,
+    graph_payload,
+    short_summary,
+    slim_result_for_model,
+)
 from app.config import get_settings
-from app.prompts import SUBMIT_SUMMARY_TOOL, SYSTEM_PROMPT
-from app.schema import RiskSummary
+from app.prompts import SUBMIT_ANSWER_TOOL, SUBMIT_SUMMARY_TOOL, SYSTEM_PROMPT
+from app.schema import RiskSummary, SanctionsHit, TurnAnswer
 from app.tools import TOOLS, execute_tool
+from app import conversations, sanctions
 
 log = logging.getLogger("erre.agent")
-
-MODEL = "claude-sonnet-4-5-20250929"  # dated snapshot = reproducible demo behavior
-MAX_ITERATIONS = 20  # safety bail-out; real investigations finish in 6-12
-MAX_TOKENS_PER_TURN = 4096
 
 
 def _client() -> AsyncAnthropic:
@@ -65,6 +76,8 @@ async def run_investigation(session_id: str, user_query: str) -> None:
     ]
 
     tools_used: list[str] = []
+    # Raw strong watchlist hits from check_sanctions (before agent adjudication).
+    raw_strong_hits: list[dict[str, Any]] = []
 
     try:
         for iteration in range(MAX_ITERATIONS):
@@ -154,14 +167,16 @@ async def run_investigation(session_id: str, user_query: str) -> None:
                     except json.JSONDecodeError:
                         parsed = {}
 
+                    graph_nodes, graph_edges = graph_payload(name, parsed)
+
                     await _emit(
                         session_id, "tool_call_result",
                         call_id=block.id,
                         tool=name,
-                        nodes=parsed.get("nodes", []),
-                        edges=parsed.get("edges", []),
+                        nodes=graph_nodes,
+                        edges=graph_edges,
                         metadata=parsed.get("metadata", {}),
-                        summary=_short_summary(name, parsed),
+                        summary=short_summary(name, parsed),
                     )
 
                     # Special: sanctions_hit event for the UI to flash a red badge.
@@ -171,15 +186,27 @@ async def run_investigation(session_id: str, user_query: str) -> None:
                             name=parsed.get("name_searched"),
                             hits=parsed.get("hits", []),
                         )
+                        for hit in parsed.get("hits", []):
+                            try:
+                                sh = SanctionsHit(**hit)
+                            except Exception:
+                                continue
+                            if sanctions.is_strong_match(sh):
+                                raw_strong_hits.append(sh.model_dump())
 
                     tool_results_for_next_turn.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": result_json,
+                        # Slimmed for the model; UI got full nodes via the event.
+                        "content": (
+                            json.dumps(slim_result_for_model(parsed), default=str)
+                            if parsed else result_json
+                        ),
                     })
 
             # ----- Decide what's next -----
             if submitted_summary is not None:
+                await _emit_sanctions_review(session_id, submitted_summary, raw_strong_hits)
                 await _emit(session_id, "summary", summary=submitted_summary.model_dump())
                 break
 
@@ -233,19 +260,326 @@ async def run_investigation(session_id: str, user_query: str) -> None:
     )
 
 
-def _short_summary(tool_name: str, parsed: dict[str, Any]) -> str:
-    """One-line human-readable summary of a tool result, shown in the tool-call feed."""
-    if tool_name == "search_entity":
-        n = len(parsed.get("nodes", []))
-        return f"found {n} match{'es' if n != 1 else ''}"
-    if tool_name in {"get_relationships", "get_officers", "find_address_connections", "find_er_links"}:
-        n = len(parsed.get("nodes", []))
-        e = len(parsed.get("edges", []))
-        meta = parsed.get("metadata", {})
-        extra = f" (capped at {meta.get('capped_at')})" if meta.get("capped_at") else ""
-        return f"{n} nodes, {e} edges{extra}"
-    if tool_name == "check_sanctions":
-        c = parsed.get("count", 0)
-        strong = parsed.get("any_strong_match", False)
-        return f"{c} hit{'s' if c != 1 else ''}" + (" — STRONG MATCH" if strong else "")
-    return "ok"
+async def _emit_sanctions_review(
+    session_id: str,
+    summary: RiskSummary,
+    raw_strong_hits: list[dict[str, Any]],
+) -> None:
+    """Compare raw strong watchlist hits to what the agent kept in the summary."""
+    review = build_sanctions_review(summary, raw_strong_hits)
+    if review is None:
+        return
+    await _emit(session_id, "sanctions_review", review=review)
+
+
+# =====================================================================
+# Phase 2: multi-turn conversation runner.
+#
+# run_turn is the conversation-aware sibling of run_investigation. The agent
+# loop is identical in SHAPE; the differences are:
+#   - two terminators (submit_summary for investigations, submit_answer for
+#     clarifications / follow-ups) — the agent picks based on the turn type,
+#   - a compressed CONVERSATION CONTEXT block prepended to the user message so
+#     follow-ups build on prior turns without replaying every raw tool_result,
+#   - graph nodes/edges accumulate into the conversation's stored graph,
+#   - events persist in Upstash under conversation:{id}:events for resume.
+# =====================================================================
+
+
+async def _emit_conv(conversation_id: str, turn_index: int, type_: str, **data: Any) -> None:
+    payload = dict(data)
+    payload["turn_index"] = turn_index
+    await conversations.append_event(conversation_id, {"type": type_, "data": payload})
+
+
+async def run_turn(
+    conversation_id: str,
+    user_message: str,
+    turn_index: int,
+    pinned_node_ids: list[str] | None = None,
+    force_risk_report: bool = False,
+) -> None:
+    """Run one conversation turn. Output is the SSE event stream persisted under
+    the conversation, plus updated summaries/answers/graph/context in Redis."""
+    pinned_node_ids = pinned_node_ids or []
+    await conversations.set_state(conversation_id, "running")
+    await _emit_conv(conversation_id, turn_index, "agent_started", input=user_message)
+    tracing.log_event(
+        "turn_started", conversation_id=conversation_id, turn=turn_index, query=user_message
+    )
+
+    client = _client()
+
+    context = await conversations.get_context(conversation_id)
+    graph = await conversations.get_graph(conversation_id)
+    context_block = build_context_block(context, graph, pinned_node_ids, force_risk_report)
+
+    # --- Intent router: classify the turn, narrow tools, inject guidance ---
+    intent_result = await intent.classify_intent(user_message, context)
+    tracing.log_event(
+        "intent_classified",
+        conversation_id=conversation_id,
+        turn=turn_index,
+        impl="native",
+        intent=intent_result.get("intent"),
+        confidence=intent_result.get("confidence"),
+        wants_report=intent_result.get("wants_report"),
+        source=intent_result.get("source"),
+    )
+    selected_names = intent.select_tool_names(intent_result)
+    investigation_tools = [
+        t for t in TOOLS if selected_names is None or t["name"] in selected_names
+    ]
+    all_tools = investigation_tools + [SUBMIT_SUMMARY_TOOL, SUBMIT_ANSWER_TOOL]
+    guidance = intent.build_guidance(intent_result)
+    if guidance:
+        context_block = f"{context_block}\n{guidance}\n"
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": build_turn_message(context_block, user_message, turn_index)}
+    ]
+
+    tools_used: list[str] = []
+    raw_strong_hits: list[dict[str, Any]] = []
+    turn_nodes: list[dict[str, Any]] = []
+    turn_edges: list[dict[str, Any]] = []
+
+    submitted_summary: RiskSummary | None = None
+    submitted_answer: TurnAnswer | None = None
+
+    try:
+        for iteration in range(MAX_ITERATIONS):
+            with tracing.span(
+                "llm_call",
+                conversation_id=conversation_id,
+                turn=turn_index,
+                iteration=iteration,
+                model=MODEL,
+                message_count=len(messages),
+            ) as sp:
+                resp = await client.messages.create(
+                    model=MODEL,
+                    max_tokens=MAX_TOKENS_PER_TURN,
+                    system=SYSTEM_PROMPT,
+                    tools=all_tools,
+                    messages=messages,
+                )
+                sp.attach(
+                    input_tokens=resp.usage.input_tokens,
+                    output_tokens=resp.usage.output_tokens,
+                    stop_reason=resp.stop_reason,
+                )
+
+            messages.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
+
+            tool_results_for_next_turn: list[dict[str, Any]] = []
+            # Text the model emitted this response. If the response also makes
+            # tool calls, this is reasoning narration -> reasoning timeline. If
+            # it makes NO tool calls (the model just talked, e.g. answered
+            # "hello" directly without submit_answer), this text IS the answer.
+            current_text_parts: list[str] = []
+            had_tool_use = False
+
+            for block in resp.content:
+                if block.type == "text":
+                    text = block.text.strip()
+                    if text:
+                        current_text_parts.append(text)
+
+                elif block.type == "tool_use":
+                    had_tool_use = True
+                    name = block.name
+                    args = block.input or {}
+
+                    if name == "submit_summary":
+                        try:
+                            args_with_used = dict(args)
+                            if not args_with_used.get("tools_used"):
+                                args_with_used["tools_used"] = sorted(set(tools_used))
+                            submitted_summary = RiskSummary(**args_with_used)
+                        except ValidationError as e:
+                            tool_results_for_next_turn.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": json.dumps({"validation_error": e.errors()}),
+                                "is_error": True,
+                            })
+                            await _emit_conv(
+                                conversation_id, turn_index, "agent_thought",
+                                text="(validation failed on submit_summary, retrying...)",
+                            )
+                        continue
+
+                    if name == "submit_answer":
+                        try:
+                            args_with_used = dict(args)
+                            if not args_with_used.get("tools_used"):
+                                args_with_used["tools_used"] = sorted(set(tools_used))
+                            submitted_answer = TurnAnswer(**args_with_used)
+                        except ValidationError as e:
+                            tool_results_for_next_turn.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": json.dumps({"validation_error": e.errors()}),
+                                "is_error": True,
+                            })
+                            await _emit_conv(
+                                conversation_id, turn_index, "agent_thought",
+                                text="(validation failed on submit_answer, retrying...)",
+                            )
+                        continue
+
+                    tools_used.append(name)
+                    await _emit_conv(
+                        conversation_id, turn_index, "tool_call_start",
+                        tool=name, args=args, call_id=block.id,
+                    )
+
+                    with tracing.span(
+                        "tool_call", conversation_id=conversation_id, tool=name, args=args
+                    ) as sp:
+                        result_json = await execute_tool(name, args)
+                        sp.attach(result_size=len(result_json))
+
+                    try:
+                        parsed = json.loads(result_json)
+                    except json.JSONDecodeError:
+                        parsed = {}
+
+                    graph_nodes, graph_edges = graph_payload(name, parsed)
+                    turn_nodes.extend(graph_nodes)
+                    turn_edges.extend(graph_edges)
+
+                    await _emit_conv(
+                        conversation_id, turn_index, "tool_call_result",
+                        call_id=block.id,
+                        tool=name,
+                        nodes=graph_nodes,
+                        edges=graph_edges,
+                        metadata=parsed.get("metadata", {}),
+                        summary=short_summary(name, parsed),
+                    )
+
+                    if name == "check_sanctions" and parsed.get("any_strong_match"):
+                        await _emit_conv(
+                            conversation_id, turn_index, "sanctions_hit",
+                            name=parsed.get("name_searched"),
+                            hits=parsed.get("hits", []),
+                        )
+                        for hit in parsed.get("hits", []):
+                            try:
+                                sh = SanctionsHit(**hit)
+                            except Exception:
+                                continue
+                            if sanctions.is_strong_match(sh):
+                                raw_strong_hits.append(sh.model_dump())
+
+                    tool_results_for_next_turn.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        # Slimmed for the model; UI got full nodes via the event.
+                        "content": (
+                            json.dumps(slim_result_for_model(parsed), default=str)
+                            if parsed else result_json
+                        ),
+                    })
+
+            # When the model made tool calls, any text it produced is reasoning
+            # narration — surface it in the reasoning timeline.
+            if had_tool_use:
+                for t in current_text_parts:
+                    await _emit_conv(conversation_id, turn_index, "agent_thought", text=t)
+
+            # ----- Terminate or continue -----
+            if submitted_summary is not None or submitted_answer is not None:
+                break
+
+            if tool_results_for_next_turn:
+                # Soft per-turn tool budget: once crossed, append a wrap-up nudge
+                # so "answer anything" can't explode the call count.
+                nudge = budget_nudge(len(tools_used))
+                if nudge:
+                    tool_results_for_next_turn.append({"type": "text", "text": nudge})
+                messages.append({"role": "user", "content": tool_results_for_next_turn})
+                continue
+
+            # No tool calls and no terminator: the model just talked (e.g. a
+            # greeting or a direct clarification). Treat its text as the answer
+            # so it lands in the response card, not the reasoning timeline.
+            answer_text = "\n\n".join(current_text_parts).strip()
+            submitted_answer = TurnAnswer(
+                answer=answer_text
+                or (
+                    "I wasn't able to produce a structured response for that. "
+                    "Try naming a specific person or company to investigate."
+                ),
+                tools_used=sorted(set(tools_used)),
+            )
+            break
+        else:
+            await _emit_conv(
+                conversation_id, turn_index, "error",
+                message=f"Turn exceeded {MAX_ITERATIONS} iterations without convergence.",
+            )
+            await conversations.set_state(conversation_id, "error")
+            return
+
+    except Exception as e:
+        log.exception("turn_failed", extra={"conversation_id": conversation_id})
+        await _emit_conv(conversation_id, turn_index, "error", message=f"agent failed: {e}")
+        await conversations.set_state(conversation_id, "error")
+        tracing.log_event("turn_failed", conversation_id=conversation_id, error=str(e))
+        return
+
+    # ----- Persist graph delta (everything the agent traversed this turn) -----
+    if turn_nodes or turn_edges:
+        graph = await conversations.merge_graph(conversation_id, turn_nodes, turn_edges)
+
+    # ----- Emit + persist the terminator result -----
+    digest: str
+    if submitted_summary is not None:
+        await _emit_sanctions_review_conv(conversation_id, turn_index, submitted_summary, raw_strong_hits)
+        await _emit_conv(conversation_id, turn_index, "summary", summary=submitted_summary.model_dump())
+        await conversations.append_summary(conversation_id, submitted_summary.model_dump())
+        await conversations.append_turn(conversation_id, {
+            "turn_index": turn_index, "kind": "investigation",
+            "user_message": user_message, "entity_name": submitted_summary.entity_name,
+        })
+        digest = digest_summary(turn_index, submitted_summary)
+    else:
+        assert submitted_answer is not None
+        await _emit_conv(conversation_id, turn_index, "answer", answer=submitted_answer.model_dump())
+        await conversations.append_answer(conversation_id, submitted_answer.model_dump())
+        await conversations.append_turn(conversation_id, {
+            "turn_index": turn_index, "kind": "answer",
+            "user_message": user_message,
+            "offer_risk_report": submitted_answer.offer_risk_report,
+        })
+        digest = digest_answer(turn_index, user_message, submitted_answer)
+
+    # ----- Update compressed episodic context -----
+    new_context = (context + "\n" + digest).strip() if context else digest
+    await conversations.set_context(conversation_id, new_context)
+    title = submitted_summary.entity_name if submitted_summary else user_message[:60]
+    await conversations.bump_meta(conversation_id, title=title)
+
+    await conversations.set_state(conversation_id, "idle")
+    await _emit_conv(conversation_id, turn_index, "done")
+    tracing.log_event(
+        "turn_complete",
+        conversation_id=conversation_id,
+        turn=turn_index,
+        tools_used=sorted(set(tools_used)),
+    )
+
+
+async def _emit_sanctions_review_conv(
+    conversation_id: str,
+    turn_index: int,
+    summary: RiskSummary,
+    raw_strong_hits: list[dict[str, Any]],
+) -> None:
+    review = build_sanctions_review(summary, raw_strong_hits)
+    if review is None:
+        return
+    await _emit_conv(conversation_id, turn_index, "sanctions_review", review=review)

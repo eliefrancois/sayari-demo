@@ -31,7 +31,7 @@ curl http://localhost:8080/health
 
 ```bash
 cd backend
-gcloud run deploy entity-risk-resolver \
+gcloud run deploy sayari-demo-backend \
   --source . \
   --region us-central1 \
   --service-account erre-runtime@sayari-demo.iam.gserviceaccount.com \

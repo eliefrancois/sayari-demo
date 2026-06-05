@@ -26,16 +26,30 @@ RiskSignal = Literal[
 ]
 
 
+# --- Source provenance tag (for the graph legend + cross-source story) ---
+# Which data system a node/edge/claim came from. ICIJ leak provenance,
+# OpenSanctions watchlists, and Sayari (registries + risk + trade) are
+# independent sources — tagging lets the UI color them and lets the agent
+# make the "corroborated across independent sources" claim honestly.
+SourceSystem = Literal["icij", "sanctions", "sayari"]
+
+
 # --- Source references (provenance backbone) ---
 
 
 class SourceRef(BaseModel):
-    """A pointer to the graph node or sanctions record that backs a claim."""
+    """A pointer to the graph node, sanctions record, or Sayari entity that
+    backs a claim. Exactly one identifier field should be populated to match
+    `source`."""
 
-    source: Literal["icij", "opensanctions"]
-    node_id: str | None = None  # Neo4j internal node id, as string
+    source: Literal["icij", "opensanctions", "sayari"]
+    node_id: str | None = None  # Neo4j internal node id, as string (icij)
     sanctions_id: str | None = None  # OpenSanctions entity id
+    sayari_entity_id: str | None = None  # Sayari entity id (resolved/traversed)
     leak: str | None = None  # ICIJ sourceID, e.g. "Paradise Papers"
+    # When the claim is backed by a Sayari risk factor, name it so the UI can
+    # tie the claim back to the factor card and its traversal path.
+    risk_factor: str | None = None
 
 
 # --- Risk summary primitives ---
@@ -50,7 +64,13 @@ class Claim(BaseModel):
 
 
 class SanctionsHit(BaseModel):
-    """A match returned by OpenSanctions."""
+    """A match returned by OpenSanctions.
+
+    The disambiguation fields (position, address, countries, birth_date) are
+    populated from OpenSanctions' /match payload when present. The agent uses
+    them to detect name-only collisions (e.g. a Wall Street banker getting a
+    high name-similarity score against a debarred physician of the same name).
+    """
 
     name_searched: str
     matched_name: str
@@ -58,6 +78,100 @@ class SanctionsHit(BaseModel):
     sanctions_id: str
     score: float  # 0..1
     reason: str | None = None
+    # True only when the match is on an actual sanctions/watchlist dataset
+    # (OFAC, EU FSF, UN, SAM exclusions, ...). False for wikidata/PEP/registry
+    # hits that happen to match by name. A "strong" sanctions hit requires
+    # BOTH a high score AND on_watchlist=True.
+    on_watchlist: bool = False
+    # Disambiguation fields. Optional because OpenSanctions records vary in
+    # completeness — some have rich PEP data, others are bare-name watchlists.
+    position: list[str] | None = None  # e.g. ["PHYSICIAN (MD, DO)"]
+    address: list[str] | None = None
+    countries: list[str] | None = None  # ISO codes, e.g. ["us", "ru"]
+    birth_date: list[str] | None = None  # ISO dates, e.g. ["1967-03-01"]
+
+
+class SayariCandidate(BaseModel):
+    """One ranked match from Sayari resolution.
+
+    Resolution returns CANDIDATES, not an answer: `score` ranks relevance
+    (descending) but the top score is not always the canonical entity (the
+    Sberbank case — the top hit was a subsidiary). The agent disambiguates
+    using score + match_strength + address + identifiers, exactly like the
+    Jeffrey-Lipman discipline on the ICIJ side. Never auto-merge into ICIJ on
+    name alone.
+    """
+
+    entity_id: str
+    label: str
+    type: str | None = None  # company / person / government_organization / ...
+    score: float | None = None  # relevance rank, descending (NOT a 0-1 confidence)
+    match_strength: str | None = None  # Sayari's qualitative band: weak/medium/strong
+    countries: list[str] = Field(default_factory=list)  # ISO trigrams
+    # Strong join keys (OFAC SDN #, LEI, SEC CIK, ru_inn/ogrn, ...).
+    identifiers: list[dict] = Field(default_factory=list)
+    addresses: list[str] = Field(default_factory=list)
+
+
+class SayariSearchCandidate(BaseModel):
+    """One lead from Sayari Entity Search (broad/fuzzy investigative search).
+
+    Distinct from SayariCandidate (precise resolution): Entity Search is lead-gen
+    — it casts a wide net to surface entities worth a closer look, NOT a ranked
+    answer to "which entity is this?". We keep each lead deliberately slim (id,
+    label, type, country, flags, top risk-factor names) so a broad query doesn't
+    flood the model or the canvas. The agent triages these, then resolves/profiles
+    the ones it wants to pursue.
+    """
+
+    entity_id: str
+    label: str
+    type: str | None = None  # company / person / government_organization / ...
+    countries: list[str] = Field(default_factory=list)  # ISO trigrams
+    sanctioned: bool | None = None
+    pep: bool | None = None
+    # The most severe risk-factor NAMES on the lead (not the full factor map) —
+    # just enough to tell a risky lead from a benign one at triage time.
+    top_risk: list[str] = Field(default_factory=list)
+
+
+class SayariRecord(BaseModel):
+    """A single Sayari source record (document-level provenance).
+
+    Returned by sayari_record: the underlying source document behind a fact, with
+    its `document_urls` / `source_url` so a finding can be traced to a primary
+    record rather than just an aggregated entity. Slimmed to the provenance-
+    relevant fields; the raw record carries large nested reference lists we drop.
+    """
+
+    id: str
+    label: str | None = None
+    source: str | None = None  # source dataset id
+    source_url: str | None = None  # dataset landing page
+    document_urls: list[str] = Field(default_factory=list)  # document-level links
+    publication_date: str | None = None
+    acquisition_date: str | None = None
+    record_url: str | None = None
+    references_count: int | None = None
+
+
+class SayariRiskFactor(BaseModel):
+    """A single slimmed Sayari risk factor.
+
+    `level` is the severity band (critical > high > elevated > relevant).
+    `value` is the raw factor value: True for direct/categorical factors,
+    a number equal to the hops in the ownership chain for derived factors, or
+    an index score. `path` holds the `metadata.traversal_path` strings
+    (`srcId|rel|tgtId|rel|tgtId`) — the exact ownership/control chain that
+    triggered the factor, which becomes a highlightable chain on the graph.
+    `psa` flags ER-derived (`psa_*`) factors as lower-confidence.
+    """
+
+    name: str
+    level: str  # critical | high | elevated | relevant (kept open for new bands)
+    value: str | float | bool | None = None
+    path: list[str] = Field(default_factory=list)
+    psa: bool = False
 
 
 class FollowupSuggestion(BaseModel):
@@ -79,6 +193,40 @@ class RiskSummary(BaseModel):
     investigation_summary: str
     tools_used: list[str]
     suggested_followups: list[FollowupSuggestion] = Field(default_factory=list)
+    # Sayari risk factors the agent chose to surface (slimmed; see
+    # slim_sayari_profile). Rendered grouped by level in the UI; each factor's
+    # `path` highlights its ownership/control chain on the graph.
+    sayari_risk_factors: list[SayariRiskFactor] = Field(default_factory=list)
+    # Open questions that would sharpen the investigation (scope honesty).
+    clarifying_questions: list[str] = Field(default_factory=list)
+
+
+class TurnAnswer(BaseModel):
+    """Lightweight terminator for follow-up / clarification turns.
+
+    Used instead of RiskSummary when the user asks a narrow question, a
+    clarification is needed, or the conversation is exploratory. Keeps the
+    same provenance discipline: any factual assertion goes in `claims` with
+    source_refs; pure explanation can live in `answer`.
+    """
+
+    answer: str  # markdown narrative — the main response
+    claims: list[Claim] = Field(default_factory=list)
+    referenced_node_ids: list[str] = Field(default_factory=list)
+    clarification_questions: list[str] = Field(default_factory=list)
+    offer_risk_report: bool = False
+    risk_report_prompt: str | None = None
+    # Guarded affordance flag: the agent sets this true when the turn has gathered
+    # enough for a formal memo — a resolved entity PLUS >=1 risk/ownership/sanctions
+    # signal. The frontend uses it to surface a "generate risk report" button
+    # (Tier 3). It does NOT auto-emit the report; the user must ask. Keeping the
+    # default conversational answer + this flag is the whole point of the
+    # conversational-by-default posture.
+    report_ready: bool = False
+    sanctions_hits: list[SanctionsHit] = Field(default_factory=list)
+    suggested_followups: list[FollowupSuggestion] = Field(default_factory=list)
+    sayari_risk_factors: list[SayariRiskFactor] = Field(default_factory=list)
+    tools_used: list[str] = Field(default_factory=list)
 
 
 # --- Tool I/O types ---
@@ -87,10 +235,13 @@ class RiskSummary(BaseModel):
 class GraphNode(BaseModel):
     """A node returned by a graph tool, ready for the frontend's React Flow canvas."""
 
-    id: str  # Neo4j node id as string
+    id: str  # Neo4j node id (icij) or Sayari entity id
     label: Literal["Entity", "Officer", "Intermediary", "Address", "Other"]
     name: str
     source: str | None = None  # ICIJ sourceID (which leak), if applicable
+    # Which data system this node came from, for the graph legend. None on
+    # legacy ICIJ nodes (treated as "icij" by the frontend).
+    source_system: SourceSystem | None = None
     properties: dict = Field(default_factory=dict)
 
 
@@ -98,6 +249,8 @@ class GraphEdge(BaseModel):
     source: str  # source node id
     target: str  # target node id
     type: str  # relationship type, e.g. "officer_of"
+    # Which data system produced this edge. None on legacy ICIJ edges.
+    source_system: SourceSystem | None = None
 
 
 class Neighborhood(BaseModel):
@@ -126,8 +279,11 @@ class StreamEvent(BaseModel):
         "tool_call_start",
         "tool_call_result",
         "sanctions_hit",
+        "sanctions_review",
         "agent_thought",
+        "token",
         "summary",
+        "answer",
         "error",
         "done",
     ]

@@ -80,6 +80,8 @@ _GET_NEIGHBORHOOD = """
 MATCH (n) WHERE elementId(n) = $node_id
 MATCH (n)-[r]-(m)
 RETURN elementId(n)   AS source_id,
+       labels(n)      AS source_labels,
+       properties(n)  AS source_props,
        elementId(m)   AS target_id,
        labels(m)      AS target_labels,
        properties(m)  AS target_props,
@@ -97,7 +99,9 @@ MATCH (o)-[r:officer_of]->(e)
 RETURN elementId(o)  AS officer_id,
        labels(o)     AS officer_labels,
        properties(o) AS officer_props,
-       elementId(e)  AS entity_id
+       elementId(e)  AS entity_id,
+       labels(e)     AS entity_labels,
+       properties(e) AS entity_props
 LIMIT $limit
 """
 
@@ -107,7 +111,10 @@ _FIND_ADDRESS_CONNECTIONS = """
 MATCH (n) WHERE elementId(n) = $node_id
 MATCH (n)-[:registered_address]->(a:Address)<-[:registered_address]-(other)
 WHERE n <> other
-RETURN elementId(other) AS other_id,
+RETURN elementId(n)     AS subject_id,
+       labels(n)        AS subject_labels,
+       properties(n)    AS subject_props,
+       elementId(other) AS other_id,
        labels(other)    AS other_labels,
        properties(other) AS other_props,
        elementId(a)     AS address_id,
@@ -124,7 +131,10 @@ MATCH (n) WHERE elementId(n) = $node_id
 MATCH (n)-[r:probably_same_officer_as|same_id_as|same_as|same_company_as|same_name_as|same_intermediary_as]-(other)
 WHERE n <> other
   AND coalesce(other.sourceID, '') <> coalesce(n.sourceID, '')
-RETURN elementId(other) AS other_id,
+RETURN elementId(n)     AS subject_id,
+       labels(n)        AS subject_labels,
+       properties(n)    AS subject_props,
+       elementId(other) AS other_id,
        labels(other)    AS other_labels,
        properties(other) AS other_props,
        type(r)          AS rel_type,
@@ -218,6 +228,15 @@ def get_relationships(node_id: str, limit: int = 50) -> Neighborhood:
     seen: set[str] = set()
     with get_driver().session() as s:
         records = list(s.run(_GET_NEIGHBORHOOD, {"node_id": node_id, "limit": limit}))
+    # Seed the central node FIRST so every edge has a real endpoint to attach
+    # to and so it lands as the subject (first node) on the canvas. Without it
+    # the edges reference an id that isn't in the node set, the frontend's
+    # d3-force layout drops them, and the neighbors float disconnected with no
+    # center. Mirrors sayari.ownership_to_neighborhood, which seeds root_id.
+    if records:
+        rec0 = records[0]
+        nodes.append(_node_from_props(rec0["source_id"], rec0["source_labels"], rec0["source_props"]))
+        seen.add(rec0["source_id"])
     for rec in records:
         if rec["target_id"] not in seen:
             nodes.append(_node_from_props(rec["target_id"], rec["target_labels"], rec["target_props"]))
@@ -235,15 +254,24 @@ def get_officers(entity_id: str, limit: int = 50) -> Neighborhood:
     """Convenience: officers of a given Entity. Returns nodes + officer_of edges."""
     nodes: list[GraphNode] = []
     edges: list[GraphEdge] = []
+    seen: set[str] = set()
     with get_driver().session() as s:
         records = list(s.run(_GET_OFFICERS, {"entity_id": entity_id, "limit": limit}))
+    # Seed the Entity itself so the officer_of edges connect to a real node
+    # (otherwise they dangle and the officers float; see get_relationships).
+    if records:
+        rec0 = records[0]
+        nodes.append(_node_from_props(rec0["entity_id"], rec0["entity_labels"], rec0["entity_props"]))
+        seen.add(rec0["entity_id"])
     for rec in records:
-        nodes.append(_node_from_props(rec["officer_id"], rec["officer_labels"], rec["officer_props"]))
+        if rec["officer_id"] not in seen:
+            nodes.append(_node_from_props(rec["officer_id"], rec["officer_labels"], rec["officer_props"]))
+            seen.add(rec["officer_id"])
         edges.append(GraphEdge(source=rec["officer_id"], target=rec["entity_id"], type="officer_of"))
     return Neighborhood(
         nodes=nodes,
         edges=edges,
-        metadata={"entity_id": entity_id, "officer_count": len(nodes)},
+        metadata={"entity_id": entity_id, "officer_count": len(seen) - 1 if records else 0},
     )
 
 
@@ -259,6 +287,12 @@ def find_address_connections(node_id: str, limit: int = 20) -> Neighborhood:
     other_ids: set[str] = set()  # track distinct "other" nodes (i.e. cross-actor matches)
     with get_driver().session() as s:
         records = list(s.run(_FIND_ADDRESS_CONNECTIONS, {"node_id": node_id, "limit": limit}))
+    # Seed the subject node so the registered_address edges from it connect to
+    # a real node instead of dangling (see get_relationships).
+    if records:
+        rec0 = records[0]
+        nodes.append(_node_from_props(rec0["subject_id"], rec0["subject_labels"], rec0["subject_props"]))
+        seen.add(rec0["subject_id"])
     for rec in records:
         other_ids.add(rec["other_id"])
         if rec["other_id"] not in seen:
@@ -295,19 +329,27 @@ def find_er_links(node_id: str, limit: int = 20) -> Neighborhood:
     nodes: list[GraphNode] = []
     edges: list[GraphEdge] = []
     seen: set[str] = set()
+    cross_leak_matches = 0
     with get_driver().session() as s:
         records = list(s.run(_FIND_ER_LINKS, {"node_id": node_id, "limit": limit}))
+    # Seed the subject node so the ER edges from it connect to a real node
+    # instead of dangling (see get_relationships).
+    if records:
+        rec0 = records[0]
+        nodes.append(_node_from_props(rec0["subject_id"], rec0["subject_labels"], rec0["subject_props"]))
+        seen.add(rec0["subject_id"])
     for rec in records:
         if rec["other_id"] not in seen:
             nodes.append(_node_from_props(rec["other_id"], rec["other_labels"], rec["other_props"]))
             seen.add(rec["other_id"])
+            cross_leak_matches += 1
         edges.append(GraphEdge(source=node_id, target=rec["other_id"], type=rec["rel_type"]))
     return Neighborhood(
         nodes=nodes,
         edges=edges,
         metadata={
             "node_id": node_id,
-            "cross_leak_matches": len(seen),
+            "cross_leak_matches": cross_leak_matches,
             "leak_pairs": [
                 (rec["from_leak"], rec["to_leak"], rec["rel_type"]) for rec in records
             ],
