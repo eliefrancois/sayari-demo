@@ -553,16 +553,20 @@ def short_summary(tool_name: str, parsed: dict[str, Any]) -> str:
 
 
 def build_sanctions_review(
-    summary: RiskSummary,
+    terminator: RiskSummary | TurnAnswer,
     raw_strong_hits: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Compare raw strong watchlist hits to what the agent kept in the summary.
+    """Compare raw strong watchlist hits to what the agent kept in the terminator.
 
-    Returns the review payload, or None when there were no strong hits to
-    adjudicate (in which case callers skip the sanctions_review event)."""
+    Works for BOTH terminator shapes: a RiskSummary (investigation turn) or a
+    TurnAnswer (answer turn) — both carry a `sanctions_hits` list of the hits the
+    agent confirmed. Everything else in `raw_strong_hits` is, by construction, a
+    strong match the agent dismissed (a name collision). Returns the review
+    payload, or None when there were no strong hits to adjudicate (in which case
+    callers skip the sanctions_review event)."""
     if not raw_strong_hits:
         return None
-    confirmed_ids = {h.sanctions_id for h in summary.sanctions_hits}
+    confirmed_ids = {h.sanctions_id for h in terminator.sanctions_hits}
     confirmed = [h for h in raw_strong_hits if h.get("sanctions_id") in confirmed_ids]
     dismissed = [h for h in raw_strong_hits if h.get("sanctions_id") not in confirmed_ids]
     return {

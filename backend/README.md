@@ -34,7 +34,6 @@ cd backend
 gcloud run deploy sayari-demo-backend \
   --source . \
   --region us-central1 \
-  --service-account erre-runtime@sayari-demo.iam.gserviceaccount.com \
   --allow-unauthenticated \
   --memory 1Gi \
   --timeout 300 \
@@ -43,3 +42,5 @@ gcloud run deploy sayari-demo-backend \
 ```
 
 For the demo window, set `--min-instances 1` to eliminate cold starts.
+
+The service runs in project `sayari-demo-elie` as the project's default compute service account, so set the active project first with `gcloud config set project sayari-demo-elie`. A dedicated least-privilege runtime service account is not yet provisioned.

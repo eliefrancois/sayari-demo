@@ -477,11 +477,101 @@ CASES: list[dict[str, Any]] = [
 ]
 
 
+def _memory_writepath_rows() -> list[tuple[str, str, bool, str]]:
+    """Deterministic write-path regression for the Investigation Memory Subsystem
+    (doc 09, Phase A). The live LLM harness below can't observe this fix:
+    `evaluate_turn` runs with persist=False, so nothing reaches Redis and
+    `recall_state` has no state_doc to read. So the Rosneft multi-turn recall case
+    is pinned here as a unit-style assertion on the exact projection finalize_node
+    persists — `agent_graph._build_state_delta` — which is where Phase A lives.
+
+    Scenario (turn 1, conversational-default ANSWER turn): check_sanctions surfaced
+    a STRONG match on "Rosneft Trading S.A." that the agent DISMISSED as a name
+    collision (so it is NOT in answer.sanctions_hits). The agent also leaned on a
+    sanctioned subsidiary lead BY ID in referenced_node_ids without traversing it
+    onto the graph. Both must land in the state_doc delta so a turn-2 follow-up
+    recovers them via recall_state WITHOUT re-running check_sanctions.
+
+    Gap (a): the dismissed strong hit must persist as a `dismissed` sanctions row
+    even though this is an answer turn (the old code only did this on summary
+    turns, dropping it). Gap (b): the referenced-but-not-traversed lead id must
+    persist into resolved_entities + named_ids (it was named with an id)."""
+    from app.schema import SanctionsHit, TurnAnswer
+
+    dismissed_hit = SanctionsHit(
+        name_searched="Rosneft Global Trade S.A.",
+        matched_name="Rosneft Trading S.A.",
+        lists=["OFAC SDN"],
+        sanctions_id="ofac-30947",
+        score=0.81,
+        on_watchlist=True,
+    ).model_dump()
+
+    lead_id = "sayari-rosneft-trade-limited"
+    answer = TurnAnswer(
+        answer=(
+            "Rosneft Trading S.A. is a separate, similarly named SDN-listed entity; "
+            "the subject itself is not on the SDN list."
+        ),
+        sanctions_hits=[],  # the strong hit was DISMISSED, not kept
+        referenced_node_ids=[lead_id],
+    )
+    state: dict[str, Any] = {
+        "turn_index": 1,
+        "user_message": "Profile Rosneft Global Trade S.A. and its sanctions exposure.",
+        "intent": "profile_entity",
+        "pinned_node_ids": [],
+        "turn_nodes": [],
+        "turn_leads": [
+            {
+                "entity_id": lead_id,
+                "label": "Rosneft Trade Limited",
+                "type": "company",
+                "countries": ["RUS"],
+                "sanctioned": True,
+                "from_turn": 1,
+            }
+        ],
+        "raw_strong_hits": [dismissed_hit],
+    }
+
+    delta = agent_graph._build_state_delta(state, None, answer)  # None summary => answer turn
+
+    sanc = delta.get("sanctions_adjudicated", [])
+    dismissed = [r for r in sanc if r.get("verdict") == "dismissed"]
+    gap_a = any(r.get("matched_name") == "Rosneft Trading S.A." for r in dismissed)
+
+    named = delta.get("named_ids", {})
+    resolved = delta.get("resolved_entities", {})
+    gap_b = lead_id in named and any(
+        r.get("entity_id") == lead_id for r in resolved.values()
+    )
+
+    case = "rosneft_memory_writepath"
+    return [
+        (case, "answer_turn_dismissed_persisted", gap_a,
+         f"dismissed_rows={[r.get('matched_name') for r in dismissed]}"),
+        (case, "referenced_id_persisted", gap_b,
+         f"named_ids={list(named)}, resolved={list(resolved)}"),
+    ]
+
+
 async def _run_local() -> int:
     print(f"Running {len(CASES)} eval cases against agent_graph (live)...\n")
     total = 0
     passed = 0
     rows: list[tuple[str, str, bool, str]] = []
+
+    # Deterministic write-path checks first — instant, no API spend. Pins the
+    # Investigation Memory Subsystem Phase A fix the live harness can't observe.
+    try:
+        for r in _memory_writepath_rows():
+            rows.append(r)
+            total += 1
+            passed += int(r[2])
+    except Exception as e:  # a crash here is a real regression, not a flake
+        rows.append(("rosneft_memory_writepath", "writepath_delta", False, f"crashed: {e}"))
+        total += 1
 
     for case in CASES:
         t0 = time.perf_counter()

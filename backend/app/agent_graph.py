@@ -469,6 +469,81 @@ async def tools_node(state: TurnState) -> dict[str, Any]:
     }
 
 
+def _in_hand_identity_index(state: TurnState) -> dict[str, dict[str, Any]]:
+    """id -> identity {label, type, sanctioned, pep, countries} built ONLY from
+    this turn's STRUCTURED tool outputs: the traversed graph nodes and the full
+    search-lead lists. Used to name (and only then persist) the entity ids the
+    agent references through structured terminator fields (gap b). No prose
+    parsing and no extra calls — every entry traces to data captured in
+    tools_node. A traversed node wins over a lead carrying the same id."""
+    idx: dict[str, dict[str, Any]] = {}
+    for n in state["turn_nodes"]:
+        if not isinstance(n, dict):
+            continue
+        nid = n.get("id")
+        nm = n.get("name")
+        if not nid or not nm:
+            continue
+        props = n.get("properties") or {}
+        idx[nid] = {
+            "label": nm,
+            "type": (n.get("label") or "").lower() or None,
+            "sanctioned": bool(props.get("sanctioned")),
+            "pep": bool(props.get("pep")),
+            "countries": props.get("countries") or props.get("country_codes") or [],
+        }
+    for lead in state["turn_leads"]:
+        if not isinstance(lead, dict):
+            continue
+        eid = lead.get("entity_id")
+        if not eid or not lead.get("label"):
+            continue
+        idx.setdefault(eid, {
+            "label": lead.get("label"),
+            "type": lead.get("type"),
+            "sanctioned": bool(lead.get("sanctioned")),
+            "pep": bool(lead.get("pep")),
+            "countries": lead.get("countries") or [],
+        })
+    return idx
+
+
+def _referenced_entity_ids(
+    summary: RiskSummary | None,
+    answer: TurnAnswer | None,
+) -> set[str]:
+    """Entity ids the agent named through the typed terminator SCHEMA:
+    TurnAnswer.referenced_node_ids, claim source_refs (node_id / sayari_entity_id),
+    and the ids embedded in sayari_risk_factors traversal paths. This NEVER reads
+    the prose `answer` string (the HaluMem / hallucinated-write trap) — only
+    validated schema fields. sanctions_ids are deliberately excluded; those are
+    watchlist rows, not entities."""
+    ids: set[str] = set()
+    for t in (summary, answer):
+        if t is None:
+            continue
+        for c in t.claims:
+            for ref in c.source_refs:
+                if ref.node_id:
+                    ids.add(ref.node_id)
+                if ref.sayari_entity_id:
+                    ids.add(ref.sayari_entity_id)
+        for f in t.sayari_risk_factors:
+            for seg in f.path or []:
+                # traversal_path segments look like `srcId|rel|tgtId|rel|...`;
+                # the pipe-delimited tokens that are entity ids match the in-hand
+                # index, and the relationship tokens simply won't (filtered there).
+                for tok in str(seg).split("|"):
+                    tok = tok.strip()
+                    if tok:
+                        ids.add(tok)
+    if answer is not None:
+        for rid in answer.referenced_node_ids:
+            if rid:
+                ids.add(rid)
+    return ids
+
+
 def _build_state_delta(
     state: TurnState,
     summary: RiskSummary | None,
@@ -476,9 +551,11 @@ def _build_state_delta(
 ) -> dict[str, Any]:
     """Build the structured state_doc delta for this turn from data already in
     hand — no extra model/tool calls. Resolved entities come from the traversed
-    nodes + the summary's primary subject; leads from turn_leads; sanctions
-    verdicts from build_sanctions_review (or answer.sanctions_hits); pinned ids
-    from the turn + pinned leads + the resolved subject; one turn_log row."""
+    nodes + the summary's primary subject + the entities the agent named through
+    structured terminator fields (gap b); leads from turn_leads; sanctions
+    verdicts (confirmed AND dismissed, on BOTH turn types — gap a) from
+    build_sanctions_review; pinned ids from the turn + pinned leads + the
+    resolved subject; one turn_log row."""
     ti = state["turn_index"]
     user_message = state["user_message"]
 
@@ -516,28 +593,64 @@ def _build_state_delta(
         })
         resolved[summary.entity_name] = rec
 
-    # Sanctions adjudicated: reuse the confirmed/dismissed diff already computed.
+    # Gap (b): entities the agent named through STRUCTURED terminator fields
+    # (referenced_node_ids, claim source_refs, risk-path ids) that we can name
+    # from THIS turn's tool outputs but that never landed as a traversed node.
+    # Deposit them so an id the agent clearly leaned on survives to recall.
+    # Ids we can't name in hand are left for the bounded resolver (no new calls).
+    id_index = _in_hand_identity_index(state)
+    already = {r.get("entity_id") for r in resolved.values()}
+    named_ids: dict[str, dict[str, Any]] = {}
+    for rid in _referenced_entity_ids(summary, answer):
+        ident = id_index.get(rid)
+        if not ident or rid in already:
+            continue
+        label = ident.get("label")
+        named_ids[rid] = {
+            "label": label,
+            "type": ident.get("type"),
+            "sanctioned": bool(ident.get("sanctioned")),
+            "pep": bool(ident.get("pep")),
+            "countries": ident.get("countries") or [],
+        }
+        if label and label not in resolved:
+            resolved[label] = {
+                "entity_id": rid,
+                "label": label,
+                "type": ident.get("type"),
+                "source": "referenced",
+                "sanctioned": bool(ident.get("sanctioned")),
+                "pep": bool(ident.get("pep")),
+                "first_seen_turn": ti,
+                "last_seen_turn": ti,
+            }
+
+    # Sanctions adjudicated: confirmed = the hits the agent kept in its
+    # terminator (both RiskSummary and TurnAnswer carry sanctions_hits);
+    # dismissed = strong check_sanctions matches this turn it did NOT keep
+    # (name collisions). Gap (a): capturing the dismissed set on ANSWER turns
+    # too — previously only investigation turns did, so a dismissed subsidiary
+    # surfaced on an answer turn (the common conversational-default path)
+    # vanished by the next turn. build_sanctions_review handles both shapes.
     sanc_rows: list[dict[str, Any]] = []
-    if summary is not None:
-        review = build_sanctions_review(summary, state["raw_strong_hits"])
-        if review is not None:
-            for verdict, key in (("confirmed", "confirmed"), ("dismissed", "dismissed")):
-                for h in review[key]:
-                    sanc_rows.append({
-                        "sanctions_id": h.get("sanctions_id"),
-                        "matched_name": h.get("matched_name"),
-                        "lists": h.get("lists", []),
-                        "verdict": verdict,
-                        "from_turn": ti,
-                    })
-    elif answer is not None and answer.sanctions_hits:
-        # Answer turns: the hits the agent kept are confirmed by construction.
-        for h in answer.sanctions_hits:
+    terminator = summary if summary is not None else answer
+    if terminator is not None:
+        review = build_sanctions_review(terminator, state["raw_strong_hits"])
+        dismissed = review["dismissed"] if review is not None else []
+        for h in terminator.sanctions_hits:
             sanc_rows.append({
                 "sanctions_id": h.sanctions_id,
                 "matched_name": h.matched_name,
                 "lists": h.lists,
                 "verdict": "confirmed",
+                "from_turn": ti,
+            })
+        for h in dismissed:
+            sanc_rows.append({
+                "sanctions_id": h.get("sanctions_id"),
+                "matched_name": h.get("matched_name"),
+                "lists": h.get("lists", []),
+                "verdict": "dismissed",
                 "from_turn": ti,
             })
 
@@ -563,6 +676,7 @@ def _build_state_delta(
         "sanctions_adjudicated": sanc_rows,
         "pinned_node_ids": pinned_ids,
         "turn_log": [turn_log_row],
+        "named_ids": named_ids,
     }
 
 
