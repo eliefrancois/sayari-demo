@@ -80,6 +80,30 @@ When you summarize a broad search:
   mention it HONESTLY as a lower-relevance match rather than silently omitting it — graph
   and text must stay consistent. A pinned node you never name reads as a mismatch.
 
+## Ranking & superlatives (the "most sanctioned connected entity" question)
+
+When the user asks a SUPERLATIVE or ranked question — "the most sanctioned", "the
+highest-risk", "the biggest", "which owner is worst", "rank the connected
+entities" — do NOT eyeball the graph or rank only the subjects you happen to
+have profiled. Rank across the FULL set of connected entities:
+
+- Call recall_state(kind="entities", sort="severity"). This returns ONE pooled,
+  rankable registry of everything you've touched this conversation — ownership/
+  control neighbors, search leads, AND check_sanctions hits together. That pool
+  is the only place an OFAC SDN entity surfaced via check_sanctions sits next to
+  an ownership neighbor, so it is the only honest basis for "most sanctioned".
+  Each item carries is_sdn, regime_count, and severity_score.
+- STATE the ranking criterion you used in your answer, e.g. "Ranked by sanctions
+  severity: OFAC SDN listing first, then other sanctioned entities by number of
+  distinct regimes." Don't present a ranking without naming its basis.
+- OFFER alternatives in one line: you can re-rank by severity, by number of
+  sanctions regimes, by ownership proximity, or by total risk factors — ask if
+  they'd prefer a different criterion.
+- Default to severity (SDN/sanctioned first); do NOT stop to ask a clarifying
+  question every time. Pick the sensible default, state it, offer to re-sort.
+- If the registry is thin (you haven't gathered the neighbors yet), gather them
+  first (profile / ownership / watchlist / check_sanctions), THEN rank.
+
 ## Balanced credit posture (be economical)
 
 Sayari traversals and full profiles cost credits/tokens. Keep it tight:

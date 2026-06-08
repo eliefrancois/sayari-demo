@@ -354,6 +354,23 @@ defaults missing keys from `_empty_state_doc`, so an older stored doc still
 loads. Read both the old and new bucket names during the transition, write only
 the new shape.
 
+> **What shipped (Phase B, 2026-06-06).** The mandatory backward-compat
+> requirement pushed a cleaner variant of the above: `entities` ships as a
+> deterministic PROJECTION over the legacy buckets (`_project_entities` folds
+> `named_ids` + `leads` + `resolved_entities` + the sanctions ledger into the
+> id-keyed registry), recomputed in `get_state_doc` (read/backfill) and
+> `merge_state_doc` (write). The legacy buckets are still WRITTEN as-is rather
+> than retired, and `leads`/`sanctions_adjudicated` were NOT renamed to
+> `lead_sets`/`sanctions_ledger`. The net is identical (one id-keyed registry
+> everything reads/ranks, with strong `check_sanctions` hits as first-class
+> entities keyed by `sanctions_id`), and an old doc backfills with zero
+> migration. Retiring the legacy buckets / renaming to the literal shape above
+> is a focused follow-up (flip the projection to a stored bucket + update the
+> legacy readers, namely the frontend hydrate and the old `recall_state` kinds,
+> in one change). `claims` shipped as a real stored bucket. `recall_state` gained
+> `kind="entities"` (default `sort="severity"`: OFAC SDN > other sanctioned by
+> distinct-regime count > PEP) and `kind="claims"`.
+
 ---
 
 ## 6. Read path: hybrid minimal-inject + tools
@@ -473,7 +490,7 @@ durable.
 | Phase | Size | What it does | What it fixes |
 | --- | --- | --- | --- |
 | **A. Widen the write path** | small | In the projection: deposit answer-turn `raw_strong_hits` as dismissed `sanctions_ledger` rows; deposit `referenced_node_ids`, `claims` + `source_refs`, and `sayari_risk_factors` paths. | The Rosneft drift directly. Named-but-not-traversed entities now persist. |
-| **B. Entity registry** | medium | Unify `resolved_entities` + `named_ids` into id-keyed `entities`; `deposit` from ALL tools (search, profile, ownership, watchlist, sanctions, ICIJ); extend `recall_state` with `kind="entities"` / `kind="claims"`. | Doc 08's "two pipes" disease and the registry contract. |
+| **B. Entity registry** (SHIPPED 2026-06-06) | medium | Unify `resolved_entities` + `named_ids` into id-keyed `entities`; `deposit` from ALL tools (search, profile, ownership, watchlist, sanctions, ICIJ); extend `recall_state` with `kind="entities"` / `kind="claims"`. | Doc 08's "two pipes" disease and the registry contract. |
 | **C. Shrink injection** | small | Cut the 30-node roster to pinned + primary; hold `_render_state_block` to a fixed token budget; optional intent prefetch (§6.4). | The context-stuffing smell. Flat token cost as the case grows. |
 | **D. Episodic vector** | real build | Provision Upstash Vector; per-turn episode write at finalize; `recall_memory` tool, recency x salience ranked, behind a flag. | Turn-10+ recall of old episodes. New infra + secrets. |
 | **E. Provenance / claims** | small-medium | Every claim and entity carries `source_refs`; the renderer cites them compactly. | "Re-cite a turn-2 finding on turn 9 without redoing the work." |

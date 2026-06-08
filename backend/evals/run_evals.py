@@ -556,22 +556,120 @@ def _memory_writepath_rows() -> list[tuple[str, str, bool, str]]:
     ]
 
 
+def _entity_registry_rows() -> list[tuple[str, str, bool, str]]:
+    """Deterministic Phase B regression (doc 09 §B): the unified id-keyed entity
+    registry. Like the write-path check above, the live harness can't observe
+    this (persist=False -> no Redis -> recall_state has no state_doc), so the
+    'most sanctioned connected entity' fix is pinned as a unit-style assertion on
+    the pure projection + severity ranking (conversations._project_entities +
+    entity_severity_score), which is exactly what recall_state(kind='entities',
+    sort='severity') ranks over.
+
+    Scenario: a turn surfaces a check_sanctions STRONG OFAC SDN hit (a Gazprom
+    Shelfproekt-style sanctioned entity that lives ONLY in the sanctions layer)
+    AND a lower-severity ownership neighbor (a clean subsidiary traversed onto
+    the graph). The SDN entity must (1) be deposited into the registry as a
+    first-class sanctioned entity, and (2) rank FIRST by severity, ahead of the
+    ownership neighbor — the gap that made the agent miss it on Gazprom."""
+    from app import conversations
+    from app.schema import SanctionsHit, TurnAnswer
+
+    sdn_hit = SanctionsHit(
+        name_searched="Gazprom",
+        matched_name="Gazprom Shelfproekt",
+        lists=["OFAC SDN"],
+        sanctions_id="ofac-99001",
+        score=0.92,
+        on_watchlist=True,
+        countries=["ru"],
+    ).model_dump()
+
+    neighbor_id = "sayari-clean-subsidiary"
+    state: dict[str, Any] = {
+        "turn_index": 1,
+        "user_message": "Investigate Gazprom and its connected sanctioned entities.",
+        "intent": "sanctions_screening",
+        "pinned_node_ids": [],
+        # An ownership neighbor traversed onto the graph (clean, low severity).
+        "turn_nodes": [
+            {
+                "id": neighbor_id,
+                "name": "Gazprom Clean Subsidiary LLC",
+                "label": "Entity",
+                "source_system": "sayari",
+                "properties": {"sanctioned": False, "pep": False, "countries": ["RUS"]},
+            }
+        ],
+        "turn_leads": [],
+        "raw_strong_hits": [sdn_hit],
+    }
+    # An answer turn that DISMISSED the SDN hit as a name collision (so it is not
+    # in sanctions_hits) — it must still land in the registry as a sanctioned
+    # entity, since the matched entity itself is genuinely SDN-listed.
+    answer = TurnAnswer(answer="Reviewed connections.", sanctions_hits=[])
+
+    delta = agent_graph._build_state_delta(state, None, answer)
+    # Project the registry exactly as get_state_doc / merge_state_doc would.
+    doc = {**conversations._empty_state_doc(), **delta}
+    entities = conversations._project_entities(doc)
+
+    sdn_present = "ofac-99001" in entities and entities["ofac-99001"].get("is_sdn") is True
+    ranked = sorted(entities.values(), key=conversations.entity_severity_score, reverse=True)
+    sdn_first = bool(ranked) and ranked[0].get("id") == "ofac-99001"
+    # The clean neighbor must also be in the same pool (one rankable set) but BELOW.
+    neighbor_in_pool = neighbor_id in entities
+    neighbor_below = neighbor_in_pool and (
+        conversations.entity_severity_score(entities[neighbor_id])
+        < conversations.entity_severity_score(entities["ofac-99001"])
+    )
+
+    # Backward-compat: an OLD-shape doc (resolved_entities/named_ids/leads, NO
+    # `entities` key) must backfill a populated registry via the same projection.
+    old_doc = {
+        "resolved_entities": {
+            "acme ltd": {"entity_id": "e-acme", "label": "Acme Ltd", "type": "company",
+                          "sanctioned": False, "first_seen_turn": 1, "last_seen_turn": 1},
+        },
+        "named_ids": {"e-named": {"label": "Named Co", "type": "company", "sanctioned": False}},
+        "leads": [{"entity_id": "e-lead", "label": "Lead Co", "from_turn": 1, "sanctioned": False}],
+        "sanctions_adjudicated": [],
+    }
+    backfilled = conversations._project_entities(old_doc)
+    backfill_ok = {"e-acme", "e-named", "e-lead"}.issubset(set(backfilled))
+
+    case = "entity_registry"
+    return [
+        (case, "sdn_hit_deposited", sdn_present, f"entities={sorted(entities)}"),
+        (case, "sdn_ranked_first", sdn_first,
+         f"top={ranked[0].get('label') if ranked else None}"),
+        (case, "neighbor_in_pool_below", neighbor_below,
+         f"neighbor_in_pool={neighbor_in_pool}"),
+        (case, "backward_compat_backfill", backfill_ok,
+         f"backfilled={sorted(backfilled)}"),
+    ]
+
+
 async def _run_local() -> int:
     print(f"Running {len(CASES)} eval cases against agent_graph (live)...\n")
     total = 0
     passed = 0
     rows: list[tuple[str, str, bool, str]] = []
 
-    # Deterministic write-path checks first — instant, no API spend. Pins the
-    # Investigation Memory Subsystem Phase A fix the live harness can't observe.
-    try:
-        for r in _memory_writepath_rows():
-            rows.append(r)
+    # Deterministic write-path + registry checks first — instant, no API spend.
+    # Pins the Investigation Memory Subsystem fixes (Phase A write-path widening,
+    # Phase B unified registry) the live harness can't observe (persist=False).
+    for name, fn in (
+        ("rosneft_memory_writepath", _memory_writepath_rows),
+        ("entity_registry", _entity_registry_rows),
+    ):
+        try:
+            for r in fn():
+                rows.append(r)
+                total += 1
+                passed += int(r[2])
+        except Exception as e:  # a crash here is a real regression, not a flake
+            rows.append((name, "deterministic_check", False, f"crashed: {e}"))
             total += 1
-            passed += int(r[2])
-    except Exception as e:  # a crash here is a real regression, not a flake
-        rows.append(("rosneft_memory_writepath", "writepath_delta", False, f"crashed: {e}"))
-        total += 1
 
     for case in CASES:
         t0 = time.perf_counter()

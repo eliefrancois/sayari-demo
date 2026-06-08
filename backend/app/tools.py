@@ -143,10 +143,13 @@ async def sayari_resolve_tool(
 
 async def _known_entity_lookup(conversation_id: str | None) -> dict[str, dict[str, Any]]:
     """id -> {label, type, sanctioned, pep, countries} for entities already seen
-    THIS conversation (prior search leads + resolved subjects). Lets a risk-path
-    node be named from earlier turns even when the current profile's
-    relationships block doesn't carry it. Pure state read — no external calls,
-    no credits. Fails open to {} so a Redis hiccup never breaks an investigation."""
+    THIS conversation. Reads from the UNIFIED entity registry (Phase B): one
+    id-keyed store that already folds prior search leads, resolved/traversed
+    subjects, cached risk-path names, AND sanctions hits with the richer-source-
+    wins merge policy applied. Lets a risk-path node be named from earlier turns
+    even when the current profile's relationships block doesn't carry it. Pure
+    state read — no external calls, no credits. Fails open to {} so a Redis
+    hiccup never breaks an investigation."""
     if not conversation_id:
         return {}
     try:
@@ -154,29 +157,9 @@ async def _known_entity_lookup(conversation_id: str | None) -> dict[str, dict[st
     except Exception:  # pragma: no cover - defensive; naming is best-effort
         return {}
     out: dict[str, dict[str, Any]] = {}
-    # named_ids first (cached risk-path names), then leads, then resolved
-    # subjects — so richer, adjudicated records win over a cached path name.
-    for nid, rec in (doc.get("named_ids") or {}).items():
+    for eid, rec in (doc.get("entities") or {}).items():
         if isinstance(rec, dict) and rec.get("label"):
-            out[nid] = {
-                "label": rec.get("label"),
-                "type": rec.get("type"),
-                "sanctioned": rec.get("sanctioned"),
-                "pep": rec.get("pep"),
-                "countries": rec.get("countries") or [],
-            }
-    for lead in doc.get("leads") or []:
-        if isinstance(lead, dict) and lead.get("entity_id") and lead.get("label"):
-            out[lead["entity_id"]] = {
-                "label": lead.get("label"),
-                "type": lead.get("type"),
-                "sanctioned": lead.get("sanctioned"),
-                "pep": lead.get("pep"),
-                "countries": lead.get("countries") or [],
-            }
-    for rec in (doc.get("resolved_entities") or {}).values():
-        if isinstance(rec, dict) and rec.get("entity_id") and rec.get("label"):
-            out[rec["entity_id"]] = {
+            out[eid] = {
                 "label": rec.get("label"),
                 "type": rec.get("type"),
                 "sanctioned": rec.get("sanctioned"),
@@ -364,6 +347,17 @@ async def sayari_record_tool(record_id: str) -> dict[str, Any]:
 # read another conversation's state.
 
 
+def _entity_view(rec: dict[str, Any]) -> dict[str, Any]:
+    """Augment a registry entity with the derived fields the agent ranks on:
+    `regime_count` (distinct sanctions regimes) and `severity_score` (the
+    deterministic ranking value). `is_sdn` is already on the record."""
+    regimes = conversations._sanctions_regimes(rec.get("sanctions_lists"))
+    out = dict(rec)
+    out["regime_count"] = len(regimes)
+    out["severity_score"] = conversations.entity_severity_score(rec)
+    return out
+
+
 async def recall_state_tool(
     conversation_id: str | None,
     kind: str,
@@ -371,6 +365,7 @@ async def recall_state_tool(
     country: str | None = None,
     sanctioned: bool | None = None,
     index: int | None = None,
+    sort: str | None = None,
     limit: int = 25,
 ) -> dict[str, Any]:
     """Query this conversation's structured state by kind + filters. Returns
@@ -428,8 +423,56 @@ async def recall_state_tool(
             rows = [r for r in rows if r.get("from_turn") == from_turn]
         return {"items": rows[:lim], "count": len(rows[:lim]), "total_in_state": total}
 
+    if kind == "entities":
+        # The unified registry: the FULL connected-entity pool (ownership
+        # neighbors + search leads + sanctions hits), one rankable set. This is
+        # what answers "the most sanctioned connected entity" — rank across ALL
+        # of it, not just the resolved subjects.
+        recs = [
+            _entity_view(r)
+            for r in (doc.get("entities") or {}).values()
+            if isinstance(r, dict)
+        ]
+        total = len(recs)
+        if sanctioned is not None:
+            recs = [r for r in recs if bool(r.get("sanctioned")) == sanctioned]
+        if country is not None:
+            cc = country.strip().upper()
+            recs = [r for r in recs if cc in [str(x).upper() for x in (r.get("countries") or [])]]
+        # Default sort = severity (the SDN/sanctioned-first ranking). "recency"
+        # falls back to last_seen_turn; anything else keeps severity.
+        if (sort or "severity").lower() == "recency":
+            recs.sort(key=lambda r: r.get("last_seen_turn") or 0, reverse=True)
+        else:
+            recs.sort(
+                key=lambda r: (r.get("severity_score") or 0.0, r.get("last_seen_turn") or 0),
+                reverse=True,
+            )
+        return {
+            "items": recs[:lim],
+            "count": len(recs[:lim]),
+            "total_in_state": total,
+            "sorted_by": (sort or "severity").lower(),
+            "ranking_note": (
+                "Ranked by severity: OFAC SDN first, then other sanctioned by # of "
+                "distinct regimes, then PEP. Re-sort with sort='recency', or filter "
+                "(sanctioned=true, country=...). severity_score / is_sdn / "
+                "regime_count are on each item."
+            ),
+        }
+
+    if kind == "claims":
+        rows = list(doc.get("claims") or [])
+        total = len(rows)
+        if from_turn is not None:
+            rows = [r for r in rows if r.get("from_turn") == from_turn]
+        return {"items": rows[:lim], "count": len(rows[:lim]), "total_in_state": total}
+
     return {"items": [], "count": 0, "total_in_state": 0,
-            "error": f"unknown kind: {kind} (expected leads|resolved_entities|sanctions)"}
+            "error": (
+                f"unknown kind: {kind} "
+                "(expected leads|entities|resolved_entities|sanctions|claims)"
+            )}
 
 
 # --- Tool descriptors (the API Claude sees) -------------------------------
@@ -817,34 +860,50 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "recall_state",
         "description": (
-            "Query your own structured investigation memory for THIS conversation — "
-            "resolved entities (by id), the full lead lists from earlier sayari_search "
-            "calls, and adjudicated sanctions verdicts. Use this to enumerate or filter "
-            "things you already found instead of re-searching (e.g. 'list all leads from "
-            "the earlier search', 'which leads were Cyprus-registered', 'what's the "
-            "entity_id for the 3rd lead'). Returns exact stored records; does NOT call any "
-            "external API or spend credits. Prefer this over re-running sayari_search/"
-            "sayari_resolve for a subject already in state."
+            "Query your own structured investigation memory for THIS conversation. "
+            "Kinds: 'entities' = the UNIFIED registry of every connected entity you've "
+            "touched (ownership/control neighbors, search leads, AND check_sanctions "
+            "hits) in ONE id-keyed, rankable pool; 'leads' = full lead lists from earlier "
+            "sayari_search calls; 'sanctions' = adjudicated sanctions verdicts (confirmed "
+            "+ dismissed); 'claims' = your prior structured claims with their source_refs; "
+            "'resolved_entities' = legacy name-keyed resolved subjects. Use this to "
+            "enumerate, filter, or RANK things you already found instead of re-searching. "
+            "For a SUPERLATIVE / ranked question ('the most sanctioned connected entity', "
+            "'highest-risk owner'), call kind='entities' with sort='severity' to rank "
+            "across the FULL pool — this is the only way to compare ownership neighbors "
+            "against sanctions hits, which live in different layers. Each entity item "
+            "carries is_sdn, regime_count, and severity_score so you can state and re-sort "
+            "the ranking. Returns exact stored records; NO external API call, no credits. "
+            "Prefer this over re-running sayari_search/sayari_resolve/check_sanctions for "
+            "anything already in state."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["leads", "resolved_entities", "sanctions"],
+                    "enum": ["entities", "leads", "resolved_entities", "sanctions", "claims"],
                     "description": "Which slice of state to read.",
                 },
                 "from_turn": {
                     "type": "integer",
-                    "description": "Optional: only leads/items first seen on this turn.",
+                    "description": "Optional: only leads/items/claims first seen on this turn.",
                 },
                 "country": {
                     "type": "string",
-                    "description": "Optional ISO trigram filter for leads, e.g. 'CYP'.",
+                    "description": "Optional ISO trigram filter for leads/entities, e.g. 'CYP'.",
                 },
                 "sanctioned": {
                     "type": "boolean",
-                    "description": "Optional: only sanctioned items.",
+                    "description": "Optional: only sanctioned items (leads, resolved_entities, entities).",
+                },
+                "sort": {
+                    "type": "string",
+                    "enum": ["severity", "recency"],
+                    "description": (
+                        "For kind='entities': 'severity' (DEFAULT — OFAC SDN first, then "
+                        "other sanctioned by distinct-regime count, then PEP) or 'recency'."
+                    ),
                 },
                 "index": {
                     "type": "integer",

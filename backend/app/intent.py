@@ -90,7 +90,10 @@ _GUIDANCE: dict[str, str] = {
     "sanctions_screening": (
         "Sanctions/PEP exposure turn: check_sanctions for DIRECT listing and "
         "sayari_watchlist for INDIRECT exposure up/down the chain. Keep OFAC "
-        "list-type discipline (never blur SDN vs non-SDN)."
+        "list-type discipline (never blur SDN vs non-SDN). For a SUPERLATIVE/"
+        "ranked ask ('most sanctioned connected entity'), rank across the FULL "
+        "pool with recall_state(kind='entities', sort='severity'), state the "
+        "criterion, and offer to re-sort — do not eyeball it from the graph."
     ),
     "provenance": (
         "Provenance turn: trace the source. Use sayari_record for document-level "
@@ -106,7 +109,9 @@ _GUIDANCE: dict[str, str] = {
         "Conversational follow-up: reuse node_ids from prior context; do NOT re-run "
         "search/resolve on a subject already investigated. To recall earlier leads, "
         "resolved ids, or sanctions verdicts, call recall_state instead of re-running "
-        "sayari_search. Answer concisely."
+        "sayari_search. For a SUPERLATIVE/ranked ask ('which connected entity is most "
+        "sanctioned?'), use recall_state(kind='entities', sort='severity') to rank the "
+        "FULL pool, state the criterion you used, and offer to re-sort. Answer concisely."
     ),
     "out_of_scope": (
         "Likely out of scope / ambiguous: if you have no tool for what's asked, say "

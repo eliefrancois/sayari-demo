@@ -240,11 +240,15 @@ def _render_state_block(state_doc: dict[str, Any] | None) -> list[str]:
     list when there's nothing structured yet (e.g. turn 1 or eval mode)."""
     if not state_doc:
         return []
-    resolved = state_doc.get("resolved_entities") or {}
+    # Phase B: the unified registry is the entity source of truth (it folds
+    # resolved subjects, leads, cached names, AND sanctions hits into one
+    # id-keyed pool). Same fixed budget/caps as before — the data source moved,
+    # the size did not (the injection shrink is Phase C, deliberately separate).
+    entities = state_doc.get("entities") or {}
     leads = state_doc.get("leads") or []
     sanctions_adj = state_doc.get("sanctions_adjudicated") or []
     pinned = state_doc.get("pinned_node_ids") or []
-    if not (resolved or leads or sanctions_adj or pinned):
+    if not (entities or leads or sanctions_adj or pinned):
         return []
 
     lines: list[str] = [
@@ -252,11 +256,13 @@ def _render_state_block(state_doc: dict[str, Any] | None) -> list[str]:
         "re-search; call recall_state to pull full detail):"
     ]
 
-    # Resolved entities (small, high-value): name->id, newest-seen first, capped.
-    if resolved:
+    # Entities (small, high-value): label->id, newest-seen first, capped. Sourced
+    # from the unified registry so sanctioned connected entities (incl. ones that
+    # only ever appeared via check_sanctions) show up here too.
+    if entities:
         recs = sorted(
-            (r for r in resolved.values() if isinstance(r, dict)),
-            key=lambda r: r.get("last_seen_turn", 0),
+            (r for r in entities.values() if isinstance(r, dict)),
+            key=lambda r: r.get("last_seen_turn") or 0,
             reverse=True,
         )
         shown = recs[:10]
@@ -265,15 +271,20 @@ def _render_state_block(state_doc: dict[str, Any] | None) -> list[str]:
             flags = []
             if r.get("type"):
                 flags.append(str(r["type"]))
-            if r.get("sanctioned"):
+            if r.get("is_sdn"):
+                flags.append("OFAC SDN")
+            elif r.get("sanctioned"):
                 flags.append("SANCTIONED")
             if r.get("pep"):
                 flags.append("PEP")
             suffix = f" ({', '.join(flags)})" if flags else ""
-            parts.append(f"{r.get('label')}={r.get('entity_id')}{suffix}")
-        line = "Resolved: " + "; ".join(parts)
+            parts.append(f"{r.get('label')}={r.get('id')}{suffix}")
+        line = "Entities: " + "; ".join(parts)
         if len(recs) > len(shown):
-            line += f'; ...+{len(recs) - len(shown)} more (recall_state kind="resolved_entities")'
+            line += (
+                f'; ...+{len(recs) - len(shown)} more '
+                '(recall_state kind="entities", sort="severity" to rank)'
+            )
         lines.append(line)
 
     if pinned:

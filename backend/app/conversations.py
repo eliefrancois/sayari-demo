@@ -217,13 +217,31 @@ async def set_context(conversation_id: str, text: str) -> None:
 _MAX_LEADS = 40  # cap the stored lead list by recency so context can't bloat
 
 
+_MAX_CLAIMS = 100  # cap the stored claims list by recency so context can't bloat
+
+
 def _empty_state_doc() -> dict[str, Any]:
     """The empty default: every key present with empty containers.
 
     `named_ids` (id -> {label, type, sanctioned, pep, countries}) caches names
     resolved for risk-path nodes this conversation, so a later turn naming the
     SAME multi-hop node reuses the cached label instead of re-spending a Sayari
-    entity_summary call — the bounded resolve compounds across turns."""
+    entity_summary call — the bounded resolve compounds across turns.
+
+    `entities` (Phase B, doc 09 §5) is the UNIFIED id-keyed registry: one
+    id -> identity store that every tool deposits into and every consumer reads
+    from. It is a deterministic PROJECTION over the other buckets (resolved
+    subjects + named_ids + leads + the sanctions ledger), recomputed on every
+    read/merge by `_project_entities`, so old stored docs that predate it are
+    backfilled transparently (true backward-compat, no migration step). The KEY
+    addition over the legacy buckets: strong check_sanctions hits become
+    first-class registry entities (keyed by sanctions_id), not just ledger rows,
+    so the full connected-entity set — ownership neighbors, search leads, AND
+    sanctions hits — becomes one queryable, rankable pool.
+
+    `claims` (doc 09 §5) holds the structured claims the agent emitted in its
+    typed terminator (text + confidence + source_refs + the entity_ids those
+    refs resolve to). Structured-only: never NLP-parsed from prose."""
     return {
         "resolved_entities": {},
         "leads": [],
@@ -231,12 +249,245 @@ def _empty_state_doc() -> dict[str, Any]:
         "pinned_node_ids": [],
         "turn_log": [],
         "named_ids": {},
+        # Phase B unified registry + structured claims. `entities` is derived
+        # (projected) from the buckets above on every read; `claims` is stored.
+        "entities": {},
+        "claims": [],
     }
 
 
 def _normalize_subject(subject: str | None) -> str:
     """The key for resolved_entities: lowercased, trimmed."""
     return (subject or "").strip().lower()
+
+
+# ---------- Unified entity registry (Phase B) ----------
+# One id-keyed identity store. Built by deterministically folding the legacy
+# buckets (no LLM, no network) so it stays backward-compatible: the registry is
+# a VIEW over data already persisted, plus the sanctions-as-entities deposit.
+
+# Which source named an id, ranked so a richer source's label wins a merge
+# (doc 08 §3.2 merge policy: richer / more-authoritative source wins). A full
+# profile/traversal beats a search snippet beats a bare referenced id.
+_ENTITY_SOURCE_RANK: dict[str, int] = {
+    "sayari_profile": 6,
+    "sayari_ownership": 6,
+    "sayari": 5,
+    "resolved": 5,
+    "sayari_summary": 5,
+    "sayari_watchlist": 5,
+    "check_sanctions": 4,
+    "search": 3,
+    "referenced": 2,
+    "named_ids": 2,
+}
+
+
+def _source_rank(src: str | None) -> int:
+    return _ENTITY_SOURCE_RANK.get((src or "").strip().lower(), 1)
+
+
+def _is_sdn_label(label: Any) -> bool:
+    """True only for the OFAC SDN (Specially Designated Nationals) blocked list —
+    the most severe OFAC posture. Explicitly NOT the OFAC Consolidated/non-SDN
+    list (same name-collision discipline the prompt enforces): 'non-SDN' /
+    'non sdn' / 'consolidated' never count as SDN."""
+    l = str(label or "").lower()
+    if "sdn" not in l:
+        return False
+    if "non-sdn" in l or "non sdn" in l or "consolidated" in l:
+        return False
+    return True
+
+
+def _sanctions_regimes(lists: Any) -> list[str]:
+    """Distinct, normalized sanctions list/program labels on an entity — the
+    basis for the 'number of distinct regimes' tiebreak in severity ranking."""
+    seen: dict[str, str] = {}
+    for x in lists or []:
+        s = str(x or "").strip()
+        if s:
+            seen.setdefault(s.lower(), s)
+    return list(seen.values())
+
+
+def entity_severity_score(e: dict[str, Any]) -> float:
+    """Deterministic severity score for ranking connected entities (doc 09 §11
+    'most sanctioned' fix). Higher = more severe:
+
+      OFAC SDN (blocked)            -> dominates everything
+      then any other sanctioned     -> OFAC non-SDN / BIS / EU / UN / regulatory
+      then by # of distinct regimes  -> broader listing ranks above a single one
+      then PEP                       -> political exposure as a minor bump
+
+    No network, no LLM — purely the sanctions data already folded onto the
+    registry entity (`is_sdn`, `sanctioned`, `sanctions_lists`, `pep`)."""
+    if not isinstance(e, dict):
+        return 0.0
+    score = 0.0
+    if e.get("is_sdn"):
+        score += 1000.0
+    if e.get("sanctioned"):
+        score += 100.0
+    score += 10.0 * len(_sanctions_regimes(e.get("sanctions_lists")))
+    if e.get("pep"):
+        score += 5.0
+    return score
+
+
+def _merge_countries(a: Any, b: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for src in (a or [], b or []):
+        for c in src:
+            cs = str(c)
+            if cs and cs not in seen:
+                seen.add(cs)
+                out.append(cs)
+    return out
+
+
+def _upsert_entity(entities: dict[str, dict[str, Any]], eid: str, rec: dict[str, Any]) -> None:
+    """Merge one deposit into the id-keyed registry (upsert, never blind
+    overwrite — doc 08 §3.2). Richer source wins the label/type; True wins for
+    the boolean flags; countries + sanctions_lists union; turn span widens."""
+    if not eid or not isinstance(rec, dict):
+        return
+    existing = entities.get(eid)
+    if existing is None:
+        merged: dict[str, Any] = {
+            "id": eid,
+            "label": rec.get("label"),
+            "type": rec.get("type"),
+            "sanctioned": bool(rec.get("sanctioned")),
+            "pep": bool(rec.get("pep")),
+            "is_sdn": bool(rec.get("is_sdn")),
+            "countries": _merge_countries(rec.get("countries"), None),
+            "sanctions_lists": _sanctions_regimes(rec.get("sanctions_lists")),
+            "source": rec.get("source"),
+            "confidence": rec.get("confidence") or "tool_output",
+            "first_seen_turn": rec.get("first_seen_turn"),
+            "last_seen_turn": rec.get("last_seen_turn"),
+        }
+        entities[eid] = merged
+        return
+    merged = dict(existing)
+    inc_label = rec.get("label")
+    if inc_label and (
+        not merged.get("label")
+        or _source_rank(rec.get("source")) > _source_rank(merged.get("source"))
+    ):
+        merged["label"] = inc_label
+        merged["source"] = rec.get("source") or merged.get("source")
+        if rec.get("type") is not None:
+            merged["type"] = rec.get("type")
+    if merged.get("type") is None and rec.get("type") is not None:
+        merged["type"] = rec.get("type")
+    for flag in ("sanctioned", "pep", "is_sdn"):
+        if rec.get(flag):
+            merged[flag] = True
+    merged["countries"] = _merge_countries(merged.get("countries"), rec.get("countries"))
+    merged["sanctions_lists"] = _sanctions_regimes(
+        (merged.get("sanctions_lists") or []) + _sanctions_regimes(rec.get("sanctions_lists"))
+    )
+    # tool_output is the strongest provenance; never downgrade it.
+    if rec.get("confidence") == "tool_output" or not merged.get("confidence"):
+        merged["confidence"] = rec.get("confidence") or merged.get("confidence") or "tool_output"
+    fs = [t for t in (merged.get("first_seen_turn"), rec.get("first_seen_turn")) if t is not None]
+    ls = [t for t in (merged.get("last_seen_turn"), rec.get("last_seen_turn")) if t is not None]
+    if fs:
+        merged["first_seen_turn"] = min(fs)
+    if ls:
+        merged["last_seen_turn"] = max(ls)
+    entities[eid] = merged
+
+
+def _project_entities(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Fold the legacy buckets into the unified id-keyed registry. Deterministic
+    and idempotent: every deposit source maps to a bucket already in the doc, so
+    this is a pure projection that backfills `entities` for any doc — including
+    old ones written before the registry existed.
+
+    Deposit order is least-authoritative first so the merge policy (richer source
+    wins) lands the best label: named_ids (cached risk-path names) -> leads
+    (search snippets) -> resolved subjects (traversed/profiled) -> sanctions
+    ledger (the KEY addition: strong check_sanctions hits as first-class
+    sanctioned entities, keyed by sanctions_id)."""
+    entities: dict[str, dict[str, Any]] = {}
+    # Seed from any already-stored registry first so prior provenance survives.
+    for eid, rec in (doc.get("entities") or {}).items():
+        if isinstance(rec, dict):
+            _upsert_entity(entities, eid, {**rec, "source": rec.get("source")})
+
+    for nid, rec in (doc.get("named_ids") or {}).items():
+        if isinstance(rec, dict) and rec.get("label"):
+            _upsert_entity(entities, nid, {
+                "label": rec.get("label"),
+                "type": rec.get("type"),
+                "sanctioned": rec.get("sanctioned"),
+                "pep": rec.get("pep"),
+                "countries": rec.get("countries"),
+                "source": "named_ids",
+                "confidence": "tool_output",
+            })
+
+    for lead in doc.get("leads") or []:
+        if not isinstance(lead, dict):
+            continue
+        eid = lead.get("entity_id")
+        if not eid or not lead.get("label"):
+            continue
+        _upsert_entity(entities, eid, {
+            "label": lead.get("label"),
+            "type": lead.get("type"),
+            "sanctioned": lead.get("sanctioned"),
+            "pep": lead.get("pep"),
+            "countries": lead.get("countries"),
+            "source": "search",
+            "confidence": "tool_output",
+            "first_seen_turn": lead.get("from_turn"),
+            "last_seen_turn": lead.get("from_turn"),
+        })
+
+    for rec in (doc.get("resolved_entities") or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        eid = rec.get("entity_id")
+        if not eid or not rec.get("label"):
+            continue
+        _upsert_entity(entities, eid, {
+            "label": rec.get("label"),
+            "type": rec.get("type"),
+            "sanctioned": rec.get("sanctioned"),
+            "pep": rec.get("pep"),
+            "countries": rec.get("countries"),
+            "source": rec.get("source") or "resolved",
+            "confidence": "tool_output",
+            "first_seen_turn": rec.get("first_seen_turn"),
+            "last_seen_turn": rec.get("last_seen_turn"),
+        })
+
+    for row in doc.get("sanctions_adjudicated") or []:
+        if not isinstance(row, dict):
+            continue
+        sid = row.get("sanctions_id")
+        if not sid:
+            continue
+        lists = row.get("lists") or []
+        _upsert_entity(entities, sid, {
+            "label": row.get("matched_name"),
+            "type": "sanctions_entity",
+            "sanctioned": True,
+            "is_sdn": any(_is_sdn_label(x) for x in lists),
+            "countries": row.get("countries"),
+            "sanctions_lists": lists,
+            "source": "check_sanctions",
+            "confidence": "tool_output",
+            "first_seen_turn": row.get("from_turn"),
+            "last_seen_turn": row.get("from_turn"),
+        })
+
+    return entities
 
 
 async def get_state_doc(conversation_id: str) -> dict[str, Any]:
@@ -257,6 +508,12 @@ async def get_state_doc(conversation_id: str) -> dict[str, Any]:
         for k in base:
             if k in doc and doc[k] is not None:
                 base[k] = doc[k]
+    # Backward-compat migration (Phase B): the unified registry is a projection
+    # over the other buckets, recomputed here so an OLD doc (resolved_entities /
+    # named_ids / leads / sanctions but no `entities`) backfills transparently
+    # and a NEW doc stays consistent even if a write path lagged. No migration
+    # write needed — the registry is always reconstructable from durable buckets.
+    base["entities"] = _project_entities(base)
     return base
 
 
@@ -347,6 +604,28 @@ async def merge_state_doc(conversation_id: str, delta: dict[str, Any]) -> dict[s
                 merged[k] = v
         named[nid] = merged
     doc["named_ids"] = named
+
+    # claims -- append the turn's structured claims, dedupe by text (most recent
+    # wins), cap by recency. Structured-only (terminator schema), never prose.
+    by_text: dict[str, dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
+    for claim in (doc.get("claims") or []) + list(delta.get("claims") or []):
+        if not isinstance(claim, dict) or not claim.get("text"):
+            continue
+        key = str(claim["text"]).strip().lower()
+        if key in by_text:
+            by_text[key].update({k: v for k, v in claim.items() if v not in (None, [], "")})
+        else:
+            by_text[key] = dict(claim)
+            ordered.append(by_text[key])
+    doc["claims"] = ordered[-_MAX_CLAIMS:]
+
+    # entities -- recompute the unified registry from the freshly-merged buckets
+    # so every tool's deposit (search leads, profile/ownership/watchlist
+    # neighbors via resolved_entities, the risk-path resolver via named_ids, and
+    # strong check_sanctions hits via the sanctions ledger) lands in ONE
+    # id-keyed pool. Deterministic projection — no LLM, no network.
+    doc["entities"] = _project_entities(doc)
 
     async with _client() as c:
         await c.post("/pipeline", json=[

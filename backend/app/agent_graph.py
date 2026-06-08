@@ -642,6 +642,9 @@ def _build_state_delta(
                 "sanctions_id": h.sanctions_id,
                 "matched_name": h.matched_name,
                 "lists": h.lists,
+                # countries enrich the registry entity this row deposits (the
+                # matched sanctioned entity becomes a first-class registry row).
+                "countries": h.countries or [],
                 "verdict": "confirmed",
                 "from_turn": ti,
             })
@@ -650,6 +653,7 @@ def _build_state_delta(
                 "sanctions_id": h.get("sanctions_id"),
                 "matched_name": h.get("matched_name"),
                 "lists": h.get("lists", []),
+                "countries": h.get("countries") or [],
                 "verdict": "dismissed",
                 "from_turn": ti,
             })
@@ -661,6 +665,25 @@ def _build_state_delta(
             pinned_ids.append(lead["entity_id"])
     if summary is not None and summary.entity_id:
         pinned_ids.append(summary.entity_id)
+
+    # Structured claims (doc 09 §5): the typed terminator's claims, with the
+    # entity_ids their source_refs resolve to. Structured-only — never the prose
+    # `answer` string (the HaluMem / hallucinated-write trap).
+    claim_rows: list[dict[str, Any]] = []
+    if terminator is not None:
+        for c in terminator.claims:
+            ent_ids: list[str] = []
+            for ref in c.source_refs:
+                for cid in (ref.node_id, ref.sanctions_id, ref.sayari_entity_id):
+                    if cid and cid not in ent_ids:
+                        ent_ids.append(cid)
+            claim_rows.append({
+                "text": c.text,
+                "confidence": c.confidence,
+                "source_refs": [r.model_dump() for r in c.source_refs],
+                "entity_ids": ent_ids,
+                "from_turn": ti,
+            })
 
     subject = summary.entity_name if summary is not None else (user_message[:80] or None)
     turn_log_row = {
@@ -677,6 +700,7 @@ def _build_state_delta(
         "pinned_node_ids": pinned_ids,
         "turn_log": [turn_log_row],
         "named_ids": named_ids,
+        "claims": claim_rows,
     }
 
 
