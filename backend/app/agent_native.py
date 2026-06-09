@@ -22,7 +22,7 @@ from typing import Any
 from anthropic import AsyncAnthropic
 from pydantic import ValidationError
 
-from app import intent, sessions, tracing
+from app import episodic, intent, sessions, tracing
 from app.agent_common import (
     MAX_ITERATIONS,
     MAX_TOKENS_PER_TURN,
@@ -597,6 +597,30 @@ async def run_turn(
             "offer_risk_report": submitted_answer.offer_risk_report,
         })
         digest = digest_answer(turn_index, user_message, submitted_answer)
+
+    # ----- L2 EPISODIC (doc 09 Phase D): mirror the graph finalize -----
+    # ADD one structured episode per turn for fuzzy recall of OLD turns. Built
+    # from the SAME deterministic structured projection the graph path uses
+    # (never the prose answer). A graceful NO-OP unless provisioned + flag-on, so
+    # the legacy native loop is unaffected when episodic is disabled (the default).
+    if episodic.is_enabled():
+        from app.agent_graph import _build_state_delta
+
+        episode_state: dict[str, Any] = {
+            "turn_index": turn_index,
+            "user_message": user_message,
+            "intent": intent_result.get("intent"),
+            "pinned_node_ids": pinned_node_ids,
+            "turn_nodes": turn_nodes,
+            "turn_leads": [],  # native loop doesn't accumulate structured leads
+            "raw_strong_hits": raw_strong_hits,
+        }
+        delta = _build_state_delta(episode_state, submitted_summary, submitted_answer)
+        episode = episodic.build_episode(
+            conversation_id, turn_index, intent_result.get("intent"),
+            delta, sorted(set(tools_used)),
+        )
+        await episodic.write_episode(episode)
 
     # ----- Update compressed episodic context -----
     new_context = (context + "\n" + digest).strip() if context else digest

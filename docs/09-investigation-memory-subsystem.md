@@ -189,9 +189,13 @@ of being explicit is so nobody re-introduces "just inject it" later.
 - **Write contract.** ADD-only at `finalize_node`, behind a feature flag.
   Eventual-consistency lag means it is for OLD episodes only; same-conversation
   exact recall stays in L3/Redis.
-- **Status.** Not built. This is the new-infra phase (D in §9), and it is
-  deliberately after the write-path fix, because vector memory of garbage is
-  still garbage.
+- **Status.** BUILT, flag-off (2026-06-08). The code, the lazy Upstash Vector
+  wrapper (`app/episodic.py`), the per-turn episode write at `finalize_node`, and
+  the `recall_memory` tool all ship, but the whole subsystem is a GRACEFUL NO-OP
+  until the user provisions an Upstash Vector index and flips
+  `EPISODIC_MEMORY_ENABLED=true`. The live demo is unaffected. It is deliberately
+  after the write-path fix, because vector memory of garbage is still garbage.
+  See the provisioning steps in `docs/05-improvements-log.md` (2026-06-08 entry).
 
 ---
 
@@ -515,12 +519,46 @@ durable.
 | **A. Widen the write path** | small | In the projection: deposit answer-turn `raw_strong_hits` as dismissed `sanctions_ledger` rows; deposit `referenced_node_ids`, `claims` + `source_refs`, and `sayari_risk_factors` paths. | The Rosneft drift directly. Named-but-not-traversed entities now persist. |
 | **B. Entity registry** (SHIPPED 2026-06-06) | medium | Unify `resolved_entities` + `named_ids` into id-keyed `entities`; `deposit` from ALL tools (search, profile, ownership, watchlist, sanctions, ICIJ); extend `recall_state` with `kind="entities"` / `kind="claims"`. | Doc 08's "two pipes" disease and the registry contract. |
 | **C. Shrink injection** (SHIPPED 2026-06-07) | small | Cut the 30-node roster to pinned + primary; hold `_render_state_block` to a fixed token budget; optional intent prefetch (§6.4). | The context-stuffing smell. Flat token cost as the case grows. |
-| **D. Episodic vector** | real build | Provision Upstash Vector; per-turn episode write at finalize; `recall_memory` tool, recency x salience ranked, behind a flag. | Turn-10+ recall of old episodes. New infra + secrets. |
-| **E. Provenance / claims** | small-medium | Every claim and entity carries `source_refs`; the renderer cites them compactly. | "Re-cite a turn-2 finding on turn 9 without redoing the work." |
-| **F. Multi-turn memory evals** | medium | Multi-turn eval harness; cases asserting recall without re-running tools. | Locks A-E in; catches regressions. |
+| **D. Episodic vector** (BUILT flag-off 2026-06-08) | real build | Lazy Upstash Vector wrapper (`episodic.py`, hosted-embedding raw-text upsert/query); per-turn episode write at finalize from the STRUCTURED delta; `recall_memory` tool, similarity x recency x salience ranked, namespaced per conversation. Everything no-ops unless `EPISODIC_MEMORY_ENABLED=true` + the vector creds are set. | Turn-10+ recall of old episodes. New infra + secrets (user must provision). |
+| **E. Provenance / claims** (SHIPPED 2026-06-08) | small-medium | Every claim and entity carries `source_refs`; the renderer cites them compactly. | "Re-cite a turn-2 finding on turn 9 without redoing the work." |
+| **F. Multi-turn memory evals** (SHIPPED 2026-06-08) | medium | Multi-turn eval harness; cases asserting recall without re-running tools. | Locks A-E in; catches regressions. |
 
 A + B + C are infra-free and are the fidelity fix. D is the only phase needing
 provisioning. E + F harden.
+
+> **What shipped (Phases E + F, 2026-06-08).** With these two the IMS (A-F) is
+> complete (D stays flag-off pending the user provisioning an Upstash Vector
+> index). **E** was a tightening pass, not a from-scratch build: structured
+> `claims` already carried `source_refs` and `recall_state(kind="claims")`
+> already returned them, and registry entities already carried `source` (which
+> tool named them) + `confidence` + `first_seen_turn`/`last_seen_turn`. The one
+> gap was the per-entity `source_refs` pointer from doc §5. `_attach_source_refs`
+> (in `conversations._project_entities`) now derives them DETERMINISTICALLY from
+> the structured buckets — a self-ref from the naming source (a sanctions hit ->
+> its OpenSanctions record, an ICIJ node -> its `node_id`, everything else -> its
+> Sayari entity id), plus the OpenSanctions record behind any sanctions-ledger
+> row it maps to, plus the exact `source_refs` of any structured claim that cited
+> it. `recall_state(kind="entities")` surfaces them (each item carries
+> `source_refs` + `first_seen_turn`), and the prompt + tool descriptions tell the
+> agent to RE-CITE a prior finding from that provenance instead of re-running the
+> tool. Because the registry is a projection recomputed on every read, old docs
+> backfill provenance with zero migration. **F** is the multi-turn harness
+> (`backend/evals/multiturn.py`, run from the existing `run_evals` entrypoint):
+> it runs N sequential turns in ONE conversation, persisting `state_doc` between
+> turns via the SAME pure merge production runs (`conversations._apply_delta`,
+> factored out of `merge_state_doc`), and asserts later-turn recall through the
+> REAL `recall_state` tool — all deterministic, no Redis, no live model, no
+> credits. Three cases: the **Rosneft regression** (a dismissed SDN subsidiary is
+> recoverable on turn 2 via `recall_state(kind="sanctions"/"entities")` AND the
+> recall path supplies the answer with zero credits, so turn 2 re-spends no
+> `check_sanctions`), the **IMS invariant** as a reusable check
+> (`ims_invariant_violations`: every id the agent names that the turn's tools
+> could name MUST appear in the registry — with a HaluMem negative control that a
+> prose-only id is NOT written), and a **faithful recap** (a recap routes to
+> `submit_answer` and the prior claim + subject are recall-recoverable). All 37
+> deterministic memory checks (write-path, registry, injection-shrink, recap
+> routing, source-enum, episodic disabled/enabled-mock, plus the 10 new E/F
+> checks) are green with episodic disabled.
 
 ---
 

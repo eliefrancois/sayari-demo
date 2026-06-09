@@ -402,6 +402,99 @@ def _upsert_entity(entities: dict[str, dict[str, Any]], eid: str, rec: dict[str,
     entities[eid] = merged
 
 
+def _self_ref(eid: str, rec: dict[str, Any]) -> dict[str, Any]:
+    """The source pointer for an entity, derived from WHICH structured source
+    named it (doc 09 §5 `source_refs`). A check_sanctions hit points back at its
+    OpenSanctions record; an ICIJ-traversed node at its node_id; everything else
+    (Sayari leads / resolved subjects / risk-path names) at its Sayari entity id.
+    Deterministic — read straight off the registry record, never prose."""
+    src = (rec.get("source") or "").strip().lower()
+    if src == "check_sanctions" or rec.get("type") == "sanctions_entity":
+        ref: dict[str, Any] = {"source": "opensanctions", "sanctions_id": eid}
+        lists = rec.get("sanctions_lists") or []
+        if lists:
+            ref["lists"] = lists
+        return ref
+    if src == "icij":
+        return {"source": "icij", "node_id": eid}
+    return {"source": "sayari", "sayari_entity_id": eid}
+
+
+def _dedupe_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order-preserving dedupe of source_refs by their identifying fields."""
+    seen: set[tuple] = set()
+    out: list[dict[str, Any]] = []
+    for r in refs:
+        if not isinstance(r, dict):
+            continue
+        key = (
+            r.get("source"), r.get("sanctions_id"), r.get("sayari_entity_id"),
+            r.get("node_id"), r.get("risk_factor"), r.get("leak"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def _attach_source_refs(
+    doc: dict[str, Any], entities: dict[str, dict[str, Any]]
+) -> None:
+    """Phase E (doc 09 §5/§E): give every registry entity a `source_refs` list so
+    a finding can be RE-CITED on a later turn with its original source, without
+    re-running the tool. Built DETERMINISTICALLY from the structured buckets
+    (never prose, doc 09 §10):
+
+      1. a self-ref from the source that named the entity (`_self_ref`),
+      2. the OpenSanctions record behind any sanctions-ledger row it maps to, and
+      3. the exact source_refs from any structured CLAIM that cited it — so the
+         entity carries back the same ref the agent first used (e.g. a sayari
+         risk_factor pointer), which is what makes the re-cite faithful.
+    """
+    refs_by_id: dict[str, list[dict[str, Any]]] = {eid: [] for eid in entities}
+
+    def add(eid: Any, ref: dict[str, Any] | None) -> None:
+        if eid in refs_by_id and ref:
+            refs_by_id[eid].append(ref)
+
+    for eid, rec in entities.items():
+        add(eid, _self_ref(eid, rec))
+
+    for row in doc.get("sanctions_adjudicated") or []:
+        if not isinstance(row, dict):
+            continue
+        sid = row.get("sanctions_id")
+        if not sid:
+            continue
+        ref: dict[str, Any] = {"source": "opensanctions", "sanctions_id": sid}
+        if row.get("lists"):
+            ref["lists"] = row.get("lists")
+        add(sid, ref)
+        for eid in row.get("entity_ids") or []:
+            add(eid, ref)
+
+    for claim in doc.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        crefs = [r for r in (claim.get("source_refs") or []) if isinstance(r, dict)]
+        if not crefs:
+            continue
+        targets = list(claim.get("entity_ids") or [])
+        for r in crefs:
+            for cid in (r.get("node_id"), r.get("sanctions_id"), r.get("sayari_entity_id")):
+                if cid and cid not in targets:
+                    targets.append(cid)
+        for eid in targets:
+            for r in crefs:
+                add(eid, r)
+
+    for eid in entities:
+        refs = _dedupe_refs(refs_by_id.get(eid) or [])
+        if refs:
+            entities[eid]["source_refs"] = refs
+
+
 def _project_entities(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Fold the legacy buckets into the unified id-keyed registry. Deterministic
     and idempotent: every deposit source maps to a bucket already in the doc, so
@@ -487,6 +580,9 @@ def _project_entities(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "last_seen_turn": row.get("from_turn"),
         })
 
+    # Phase E: attach deterministic source_refs (provenance) to every entity so a
+    # finding can be re-cited with its source on a later turn (doc 09 §5/§E).
+    _attach_source_refs(doc, entities)
     return entities
 
 
@@ -517,8 +613,11 @@ async def get_state_doc(conversation_id: str) -> dict[str, Any]:
     return base
 
 
-async def merge_state_doc(conversation_id: str, delta: dict[str, Any]) -> dict[str, Any]:
-    """Read-modify-write the structured state with a turn's delta.
+def _apply_delta(doc: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
+    """Pure, deterministic read-modify of the structured state with a turn's
+    delta (no Redis, no I/O). This is the exact transformation `merge_state_doc`
+    persists; it is factored out so the multi-turn eval harness (doc 09 §F) can
+    persist `state_doc` between turns EXACTLY as production does, without Redis.
 
     - resolved_entities: upsert by normalized subject key (earliest
       first_seen_turn preserved, latest last_seen_turn advanced).
@@ -527,10 +626,9 @@ async def merge_state_doc(conversation_id: str, delta: dict[str, Any]) -> dict[s
     - sanctions_adjudicated: append + dedupe by sanctions_id (most recent wins).
     - pinned_node_ids: order-preserving union.
     - turn_log: append.
-    Refreshes the 24h TTL.
+    - claims: append + dedupe by text, cap by recency.
+    - entities: recompute the unified registry projection from the merged buckets.
     """
-    doc = await get_state_doc(conversation_id)
-
     # resolved_entities -- upsert by normalized key.
     resolved = doc["resolved_entities"]
     for key, rec in (delta.get("resolved_entities") or {}).items():
@@ -626,7 +724,15 @@ async def merge_state_doc(conversation_id: str, delta: dict[str, Any]) -> dict[s
     # strong check_sanctions hits via the sanctions ledger) lands in ONE
     # id-keyed pool. Deterministic projection — no LLM, no network.
     doc["entities"] = _project_entities(doc)
+    return doc
 
+
+async def merge_state_doc(conversation_id: str, delta: dict[str, Any]) -> dict[str, Any]:
+    """Read-modify-write the structured state with a turn's delta. Reads the
+    current doc, applies the delta via the pure `_apply_delta`, writes it back,
+    and refreshes the 24h TTL."""
+    doc = await get_state_doc(conversation_id)
+    doc = _apply_delta(doc, delta)
     async with _client() as c:
         await c.post("/pipeline", json=[
             ["SET", _k(conversation_id, "state_doc"), json.dumps(doc, default=str), "EX", str(_TTL_SECONDS)],

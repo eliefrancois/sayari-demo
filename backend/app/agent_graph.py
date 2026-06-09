@@ -44,7 +44,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import ValidationError
 
-from app import conversations, intent, sanctions, tracing
+from app import conversations, episodic, intent, sanctions, tracing
 from app.agent_common import (
     MAX_TOKENS_PER_TURN,
     MODEL,
@@ -764,7 +764,18 @@ async def finalize_node(state: TurnState) -> dict[str, Any]:
     # Persist the structured investigation state (exact recall): resolved
     # entities, the full lead lists, sanctions verdicts, pinned ids, turn log.
     # Deterministic merge from data already in hand — no extra model/tool calls.
-    await conversations.merge_state_doc(cid, _build_state_delta(state, summary, answer))
+    delta = _build_state_delta(state, summary, answer)
+    await conversations.merge_state_doc(cid, delta)
+
+    # L2 EPISODIC (doc 09 Phase D): ADD one structured episode per turn for fuzzy
+    # recall of OLD turns via recall_memory. Derived from the SAME structured
+    # delta (never the prose answer). A graceful NO-OP unless episodic memory is
+    # provisioned + flag-enabled, so the live demo is unaffected.
+    if episodic.is_enabled():
+        episode = episodic.build_episode(
+            cid, ti, state.get("intent"), delta, sorted(set(state["tools_used"]))
+        )
+        await episodic.write_episode(episode)
 
     if summary is not None:
         review = build_sanctions_review(summary, state["raw_strong_hits"])

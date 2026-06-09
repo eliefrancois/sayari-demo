@@ -129,6 +129,25 @@ the EXACT, COMPLETE stored rows (no credits, no graph nodes):
 A confident enumeration that contradicts or under-counts what recall_state would
 return is a recall failure. When in doubt, recall first, then answer.
 
+RE-CITING a prior finding (provenance travels with the row). When you reference
+something you found on an earlier turn, you do NOT need to re-run the tool to
+re-source it. recall_state carries provenance: every kind="entities" item has
+source_refs (the OpenSanctions record / Sayari entity / ICIJ node it came from)
+plus first_seen_turn, and kind="claims" returns your prior claims with their
+original source_refs. Pull the row, reuse its source_ref in your new claim, and
+say which turn it came from — that is how you re-cite a turn-2 finding on turn 9
+without redoing the work. Re-running check_sanctions / sayari_profile just to
+re-source a fact you already stored is a wasted credit.
+
+There is also recall_memory for FUZZY, by-topic recall of OLDER turns in a long
+investigation ("what did we look at about X a while back", "have we touched
+anything sanctions-related before") — it does a semantic search over per-turn
+episodes ranked by relevance, recency, and salience. Use it ONLY when the ask is
+vague and you don't know which turn a finding came from. It is approximate and may
+miss rows, so it NEVER replaces recall_state for exact or complete enumeration —
+recall_state is the source of truth. If recall_memory returns configured=false
+(episodic memory is off), just use recall_state.
+
 ## Balanced credit posture (be economical)
 
 Sayari traversals and full profiles cost credits/tokens. Keep it tight:

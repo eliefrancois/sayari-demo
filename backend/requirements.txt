@@ -9,6 +9,11 @@ pydantic-settings==2.7.1
 sse-starlette==2.2.1
 upstash-redis==1.2.0
 python-dotenv==1.0.1
+# Phase D (IMS): L2 episodic vector memory in Upstash Vector, behind
+# EPISODIC_MEMORY_ENABLED. Uses Upstash's HOSTED embedding model (raw-text
+# upsert/query), so no separate embedding provider/key is needed. A graceful
+# no-op when the vector env vars / flag are absent — the live demo is unaffected.
+upstash-vector==0.8.0
 # Phase 5: LangGraph agent implementation (behind AGENT_IMPL=graph) + LangSmith.
 langgraph==1.2.2
 langchain-anthropic==1.4.4

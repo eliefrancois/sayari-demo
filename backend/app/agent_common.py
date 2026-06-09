@@ -575,9 +575,10 @@ def graph_payload(tool_name: str, parsed: dict[str, Any]) -> tuple[list, list]:
     graph — the graph should only show entities the agent decided to traverse.
     sayari_resolve is the Sayari analogue: it returns ranked candidates the
     agent must pick from, so its results stay off the canvas too.
-    recall_state is a pure read over stored state — it must NEVER add nodes.
+    recall_state / recall_memory are pure reads over stored memory — they must
+    NEVER add nodes.
     """
-    if tool_name in ("search_entity", "sayari_resolve", "recall_state"):
+    if tool_name in ("search_entity", "sayari_resolve", "recall_state", "recall_memory"):
         return [], []
     return parsed.get("nodes", []), parsed.get("edges", [])
 
@@ -693,6 +694,11 @@ def short_summary(tool_name: str, parsed: dict[str, Any]) -> str:
         n = parsed.get("count", 0)
         total = parsed.get("total_in_state", 0)
         return f"recalled {n} of {total} from memory"
+    if tool_name == "recall_memory":
+        if parsed.get("configured") is False:
+            return "episodic memory not configured"
+        n = parsed.get("count", 0)
+        return f"recalled {n} episode{'s' if n != 1 else ''}"
     return "ok"
 
 

@@ -26,7 +26,7 @@ import json
 import logging
 from typing import Any
 
-from app import conversations, graph, sanctions, sayari
+from app import conversations, episodic, graph, sanctions, sayari
 from app.agent_common import (
     relabel_identifiers,
     slim_sayari_profile,
@@ -457,7 +457,9 @@ async def recall_state_tool(
                 "Ranked by severity: OFAC SDN first, then other sanctioned by # of "
                 "distinct regimes, then PEP. Re-sort with sort='recency', or filter "
                 "(sanctioned=true, country=...). severity_score / is_sdn / "
-                "regime_count are on each item."
+                "regime_count are on each item. Each item also carries source_refs "
+                "(where it came from) + first_seen_turn — cite a prior finding with "
+                "its source without re-running the tool."
             ),
         }
 
@@ -473,6 +475,30 @@ async def recall_state_tool(
                 f"unknown kind: {kind} "
                 "(expected leads|entities|resolved_entities|sanctions|claims)"
             )}
+
+
+# --- Memory tool: FUZZY semantic recall over episodic memory (L2, doc 09 §D) --
+# Distinct from recall_state (exact L3 filtering). recall_memory does similarity
+# search over per-turn episodes for "what did we look at about X a while ago" on
+# a long investigation. Graceful no-op: when episodic memory is not provisioned/
+# enabled it returns a clear "not configured" result so the agent falls back to
+# recall_state. conversation_id is injected by the loop (not model-visible).
+
+
+async def recall_memory_tool(
+    conversation_id: str | None,
+    query: str,
+    top_k: int = 5,
+    sanctioned: bool | None = None,
+) -> dict[str, Any]:
+    """Fuzzy semantic recall over THIS conversation's per-turn episodes, ranked
+    by similarity x recency x salience. For recalling OLD turns by topic, NOT for
+    exact enumeration (use recall_state for that). Returns a structured result;
+    when episodic memory is disabled, `configured` is False and the note tells
+    the agent to fall back to recall_state."""
+    return await episodic.query_episodes(
+        conversation_id, query or "", top_k=top_k, sanctioned=sanctioned
+    )
 
 
 # --- Tool descriptors (the API Claude sees) -------------------------------
@@ -873,7 +899,10 @@ TOOLS: list[dict[str, Any]] = [
             "across the FULL pool — this is the only way to compare ownership neighbors "
             "against sanctions hits, which live in different layers. Each entity item "
             "carries is_sdn, regime_count, and severity_score so you can state and re-sort "
-            "the ranking. Returns exact stored records; NO external API call, no credits. "
+            "the ranking, PLUS source_refs + first_seen_turn (its provenance) so you can "
+            "RE-CITE a finding from an earlier turn with its original source instead of "
+            "re-investigating it. 'claims' likewise returns your prior claims with their "
+            "source_refs. Returns exact stored records; NO external API call, no credits. "
             "Prefer this over re-running sayari_search/sayari_resolve/check_sanctions for "
             "anything already in state."
         ),
@@ -914,6 +943,46 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["kind"],
         },
     },
+    {
+        "name": "recall_memory",
+        "description": (
+            "FUZZY semantic recall of EARLIER turns in this conversation by topic — "
+            "'what did we find about X a while ago', 'remind me what we looked at "
+            "regarding shell companies', 'have we touched anything sanctions-related "
+            "before'. It does a similarity search over per-turn episodes (one compact "
+            "record per turn) ranked by relevance x recency x salience, and returns a "
+            "small bounded set with each episode's turn, subjects, key findings, "
+            "sanctions touched, and tools used. "
+            "USE THIS for vague, by-topic recall across a LONG investigation when you "
+            "don't know which turn a finding came from. Do NOT use it for EXACT or "
+            "COMPLETE enumeration ('list ALL the sanctioned subsidiaries', 'the leads "
+            "from turn 3', 'every connected entity') — that is recall_state's job "
+            "(byte-exact, complete, filterable). recall_memory is approximate by "
+            "design and may miss rows; recall_state is the source of truth. "
+            "If episodic memory is not configured the result has configured=false and "
+            "an empty episode list — when you see that, fall back to recall_state. "
+            "No external credits, no graph nodes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to recall, in natural language (e.g. 'sanctioned subsidiaries we discussed').",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max episodes to return (default 5).",
+                    "default": 5,
+                },
+                "sanctioned": {
+                    "type": "boolean",
+                    "description": "Optional: only episodes that touched a sanctions finding.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -938,6 +1007,7 @@ _ASYNC = {
     "sayari_watchlist": sayari_watchlist_tool,
     "sayari_record": sayari_record_tool,
     "recall_state": recall_state_tool,
+    "recall_memory": recall_memory_tool,
 }
 
 # Tools that read per-conversation memory. The agent loop injects the real
@@ -945,7 +1015,9 @@ _ASYNC = {
 # it reads from; conversation_id is deliberately absent from their input_schema.
 # sayari_profile/summary use it ONLY to name risk-path nodes from prior-turn
 # entities (best-effort); the model neither sees nor sets it.
-_NEEDS_CONVERSATION_ID = frozenset({"recall_state", "sayari_profile", "sayari_summary"})
+_NEEDS_CONVERSATION_ID = frozenset(
+    {"recall_state", "recall_memory", "sayari_profile", "sayari_summary"}
+)
 
 
 async def execute_tool(

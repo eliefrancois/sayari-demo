@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     upstash_redis_rest_url: str = Field(default="", alias="UPSTASH_REDIS_REST_URL")
     upstash_redis_rest_token: str = Field(default="", alias="UPSTASH_REDIS_REST_TOKEN")
 
+    # L2 episodic memory (doc 09 Phase D): a SEPARATE Upstash Vector index (not
+    # the Redis above). Holds one structured episode per turn for fuzzy semantic
+    # recall of OLD turns via the recall_memory tool. Everything is a graceful
+    # NO-OP unless BOTH the index creds are present AND the flag is on, so the
+    # live demo is unaffected until the user provisions it and flips the flag.
+    upstash_vector_rest_url: str = Field(default="", alias="UPSTASH_VECTOR_REST_URL")
+    upstash_vector_rest_token: str = Field(default="", alias="UPSTASH_VECTOR_REST_TOKEN")
+    episodic_memory_enabled: bool = Field(default=False, alias="EPISODIC_MEMORY_ENABLED")
+
     opensanctions_api_url: str = Field(
         default="https://api.opensanctions.org", alias="OPENSANCTIONS_API_URL"
     )

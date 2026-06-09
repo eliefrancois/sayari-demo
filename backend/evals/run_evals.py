@@ -38,6 +38,7 @@ import time
 from typing import Any, Callable
 
 from app import agent_graph
+from evals import multiturn
 
 # An evaluator takes the evaluate_turn output and returns (passed, comment).
 Evaluator = Callable[[dict[str, Any]], tuple[bool, str]]
@@ -859,6 +860,152 @@ def _source_enum_rows() -> list[tuple[str, str, bool, str]]:
     ]
 
 
+async def _episodic_disabled_rows() -> list[tuple[str, str, bool, str]]:
+    """Deterministic Phase D regression (doc 09 §D): the GRACEFUL NO-OP contract
+    of L2 episodic vector memory when it is DISABLED (the default, and how the
+    eval suite + live demo run today). This locks in that the new infrastructure
+    cannot regress the existing flow:
+
+    1. is_enabled() is False with no vector creds / flag — the single gate.
+    2. recall_memory returns a clean configured=false result whose note steers the
+       agent to recall_state (the fallback the prompt promises), NOT an error.
+    3. write_episode no-ops (returns False) so finalize never blocks or writes.
+    4. build_episode is pure + STRUCTURED-ONLY: it derives the embed text from the
+       structured delta (subjects, claim text, sanctions) and never from the prose
+       answer string (the HaluMem trap, doc 09 §10)."""
+    from app import episodic
+    from app.tools import recall_memory_tool
+
+    episodic.reset_for_test()
+
+    disabled = not episodic.is_enabled()
+
+    res = await recall_memory_tool(conversation_id="c-eval", query="sanctioned subsidiaries")
+    tool_noop = (
+        res.get("configured") is False
+        and res.get("count") == 0
+        and "recall_state" in (res.get("note") or "")
+    )
+
+    wrote = await episodic.write_episode({"conversation_id": "c-eval", "turn": 1, "text": "x"})
+    write_noop = wrote is False
+
+    # Structured-only episode: a prose answer that mentions a NON-structured name
+    # must NOT leak into the embed text; only the structured delta fields do.
+    delta = {
+        "resolved_entities": {
+            "rosneft global trade s.a.": {
+                "entity_id": "sayari-rgt", "label": "Rosneft Global Trade S.A.",
+                "type": "company", "sanctioned": False,
+                "first_seen_turn": 1, "last_seen_turn": 1,
+            }
+        },
+        "sanctions_adjudicated": [
+            {"sanctions_id": "ofac-30947", "matched_name": "Rosneft Trading S.A.",
+             "lists": ["OFAC SDN"], "verdict": "dismissed", "from_turn": 1},
+        ],
+        "claims": [
+            {"text": "Subject is not itself on the SDN list.", "confidence": "high",
+             "source_refs": [{"source": "sayari", "sayari_entity_id": "sayari-rgt"}],
+             "entity_ids": ["sayari-rgt"], "from_turn": 1},
+        ],
+        "named_ids": {},
+        "turn_log": [{"turn": 1, "subject": "Rosneft Global Trade S.A."}],
+    }
+    ep = episodic.build_episode("c-eval", 1, "profile_entity", delta, ["sayari_profile", "check_sanctions"])
+    structured = (
+        "Rosneft Global Trade S.A." in ep["text"]
+        and "Rosneft Trading S.A." in ep["text"]  # structured sanctions field
+        and "sayari-rgt" in ep["entity_ids"]
+        and "ofac-30947" in ep["entity_ids"]
+        and ep["salience"] > 0.3  # a dismissed hit bumps salience
+        and ep["turn"] == 1
+    )
+
+    case = "episodic_disabled"
+    return [
+        (case, "disabled_by_default", disabled, f"is_enabled={episodic.is_enabled()}"),
+        (case, "recall_memory_noop", tool_noop, f"configured={res.get('configured')} count={res.get('count')}"),
+        (case, "write_episode_noop", write_noop, f"wrote={wrote}"),
+        (case, "episode_structured_only", structured,
+         f"text={ep['text'][:60]!r} ids={ep['entity_ids']}"),
+    ]
+
+
+async def _episodic_enabled_mock_rows() -> list[tuple[str, str, bool, str]]:
+    """Minimal unit-level check of the ENABLED episodic path WITHOUT real creds:
+    inject a fake Upstash Vector index and assert (1) write_episode upserts the
+    raw-text episode under the `{cid}:{turn}` id in the conversation's namespace,
+    and (2) query_episodes re-ranks by similarity x recency x salience (not raw
+    cosine) — a recent, lower-similarity episode can outrank an older, higher-
+    similarity one. Restores the module afterwards so the rest of the suite runs
+    with episodic disabled (the no-op contract)."""
+    from app import episodic
+
+    class _FakeMatch:
+        def __init__(self, score: float, meta: dict[str, Any]):
+            self.score = score
+            self.metadata = meta
+
+    class _FakeIndex:
+        def __init__(self) -> None:
+            self.upserts: list[Any] = []
+
+        def upsert(self, vectors: Any, namespace: str | None = None) -> None:
+            self.upserts.append((vectors, namespace))
+
+        def query(self, data: str, top_k: int, include_metadata: bool,
+                  namespace: str, filter: str) -> list[Any]:
+            # turn 2 is MORE similar but older + (here) lower salience; turn 5 is
+            # recent. The weighted rerank should float turn 5 to the top.
+            return [
+                _FakeMatch(0.40, {"turn": 2, "salience": 0.3, "subjects": ["Old Co"],
+                                  "findings": ["f2"], "sanctions": [], "entity_ids": ["e2"],
+                                  "tools_used": []}),
+                _FakeMatch(0.55, {"turn": 5, "salience": 0.3, "subjects": ["New Co"],
+                                  "findings": ["f5"], "sanctions": [], "entity_ids": ["e5"],
+                                  "tools_used": []}),
+            ]
+
+    orig_enabled = episodic.is_enabled
+    orig_get_index = episodic._get_index
+    fake = _FakeIndex()
+    try:
+        episodic.is_enabled = lambda: True  # type: ignore[assignment]
+        episodic._get_index = lambda: fake  # type: ignore[assignment]
+
+        ep = episodic.build_episode("c-mock", 5, "profile_entity", {
+            "resolved_entities": {"new co": {"entity_id": "e5", "label": "New Co"}},
+        }, ["sayari_profile"])
+        wrote = await episodic.write_episode(ep)
+        upsert_ok = (
+            wrote is True
+            and bool(fake.upserts)
+            and fake.upserts[0][0][0][0] == "c-mock:5"  # (id, text, meta) tuple
+            and fake.upserts[0][1] == "c-mock"          # namespace
+        )
+
+        res = await episodic.query_episodes("c-mock", "companies", top_k=2)
+        episodes = res.get("episodes", [])
+        rerank_ok = (
+            res.get("configured") is True
+            and len(episodes) == 2
+            and episodes[0]["turn"] == 5  # recency lifted the lower-similarity hit
+        )
+    finally:
+        episodic.is_enabled = orig_enabled  # type: ignore[assignment]
+        episodic._get_index = orig_get_index  # type: ignore[assignment]
+        episodic.reset_for_test()
+
+    case = "episodic_enabled_mock"
+    return [
+        (case, "write_upserts_namespaced", upsert_ok,
+         f"upserts={len(fake.upserts)}"),
+        (case, "query_reranks_recency_salience", rerank_ok,
+         f"top_turn={episodes[0]['turn'] if episodes else None}"),
+    ]
+
+
 async def _run_local() -> int:
     print(f"Running {len(CASES)} eval cases against agent_graph (live)...\n")
     total = 0
@@ -882,6 +1029,28 @@ async def _run_local() -> int:
                 passed += int(r[2])
         except Exception as e:  # a crash here is a real regression, not a flake
             rows.append((name, "deterministic_check", False, f"crashed: {e}"))
+            total += 1
+
+    # Phase D: episodic memory — the graceful-no-op contract (disabled, default)
+    # and a mock-backed enabled-path check (async, so run separately).
+    # Phase F: the multi-turn memory harness (doc 09 §11). Runs N sequential
+    # turns in ONE conversation, persisting state_doc between turns exactly as
+    # production does, then asserts later-turn recall WITHOUT re-running tools:
+    # the Rosneft regression, the IMS invariant, and a faithful recap.
+    for nm, afn in (
+        ("episodic_disabled", _episodic_disabled_rows),
+        ("episodic_enabled_mock", _episodic_enabled_mock_rows),
+        ("multiturn_recall", multiturn.multiturn_recall_rows),
+        ("ims_invariant", multiturn.ims_invariant_rows),
+        ("recap_multiturn", multiturn.recap_multiturn_rows),
+    ):
+        try:
+            for r in await afn():
+                rows.append(r)
+                total += 1
+                passed += int(r[2])
+        except Exception as e:
+            rows.append((nm, "deterministic_check", False, f"crashed: {e}"))
             total += 1
 
     for case in CASES:

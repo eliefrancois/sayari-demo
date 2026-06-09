@@ -40,6 +40,7 @@ _INTENT_TOOLS: dict[str, list[str]] = {
         "sayari_summary",
         "check_sanctions",
         "recall_state",
+        "recall_memory",
     ],
     "ownership_network": [
         "sayari_resolve",
@@ -47,6 +48,7 @@ _INTENT_TOOLS: dict[str, list[str]] = {
         "sayari_ownership",
         "sayari_summary",
         "recall_state",
+        "recall_memory",
     ],
     "sanctions_screening": [
         "sayari_resolve",
@@ -62,7 +64,9 @@ _INTENT_TOOLS: dict[str, list[str]] = {
         "get_relationships",
         "find_er_links",
     ],
-    "broad_search": ["sayari_search", "sayari_resolve", "search_entity", "recall_state"],
+    "broad_search": [
+        "sayari_search", "sayari_resolve", "search_entity", "recall_state", "recall_memory",
+    ],
     # Meta intents -> full toolset (None subset). Guidance still differs.
     "conversational_followup": [],
     "out_of_scope": [],
