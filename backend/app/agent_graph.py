@@ -51,6 +51,7 @@ from app.agent_common import (
     bound_context_digest,
     budget_nudge,
     build_context_block,
+    build_followup_prefetch,
     build_sanctions_review,
     build_turn_message,
     digest_answer,
@@ -359,17 +360,44 @@ async def tools_node(state: TurnState) -> dict[str, Any]:
                 terminated = True
                 tool_messages.append(ToolMessage(content="ok", tool_call_id=call_id))
             except ValidationError as e:
-                tool_messages.append(
-                    ToolMessage(
-                        content=json.dumps({"validation_error": e.errors()}, default=str),
-                        tool_call_id=call_id,
-                        status="error",
+                # Server-side breadcrumb so the next failure is diagnosable from
+                # logs alone (pure logging, no behavior change).
+                log.warning(
+                    "terminator validation failed name=%s errors=%s",
+                    name, e.errors(),
+                )
+                # Truncation-aware retry: if the model hit the output ceiling, its
+                # tool-call args came back cut off (unparseable / missing fields).
+                # Feeding back the giant e.errors() blob just grows the input and
+                # reinforces the loop, so send a SHORT targeted nudge to emit a
+                # smaller terminator instead. Otherwise (a genuine shape error),
+                # the structured errors are the useful signal — keep them.
+                truncated = (
+                    (getattr(last, "response_metadata", None) or {}).get("stop_reason")
+                    == "max_tokens"
+                )
+                if truncated:
+                    err_content = (
+                        f"Your previous {name} was CUT OFF at the output token limit, "
+                        "so its arguments were truncated and could not be parsed. "
+                        "Re-emit it COMPLETE but SHORTER: keep only the most important "
+                        "claims (fewer, terser), trim long narrative text, and make sure "
+                        "the tool-call JSON is fully closed."
                     )
+                else:
+                    err_content = json.dumps({"validation_error": e.errors()}, default=str)
+                tool_messages.append(
+                    ToolMessage(content=err_content, tool_call_id=call_id, status="error")
                 )
                 if persist:
                     await _emit(
                         cid, ti, "agent_thought",
-                        text=f"(validation failed on {name}, retrying...)",
+                        text=(
+                            f"(previous {name} was cut off at the output limit, "
+                            "retrying shorter...)"
+                            if truncated
+                            else f"(validation failed on {name}, retrying...)"
+                        ),
                     )
             continue
 
@@ -909,6 +937,13 @@ async def run_turn(
         user_message, context_block, context,
         conversation_id=conversation_id, turn_index=turn_index, impl="graph",
     )
+    # Phase 2.5 (doc 09 §6.4): for a conversational follow-up that keyword-matches
+    # a known bucket, inject ONE bounded slice up front so the common enumeration
+    # follow-up answers in one hop instead of round-tripping through recall_state.
+    if turn_intent == "conversational_followup":
+        prefetch = build_followup_prefetch(state_doc, user_message)
+        if prefetch:
+            context_block = f"{context_block}\n{prefetch}\n"
     state = _initial_state(
         conversation_id, turn_index, user_message, context, context_block,
         persist=True, tool_names=tool_names, intent=turn_intent,

@@ -104,6 +104,31 @@ have profiled. Rank across the FULL set of connected entities:
 - If the registry is thin (you haven't gathered the neighbors yet), gather them
   first (profile / ownership / watchlist / check_sanctions), THEN rank.
 
+## Recalling prior findings (the INVESTIGATION STATE core is navigation, not data)
+
+The INVESTIGATION STATE block injected with each turn is intentionally SMALL — it
+is navigation hints only: the primary subject(s), pinned ids, one header line per
+recent search, the top few CONFIRMED sanctions by name, and a registry count. It
+is NOT the full record of what you found. It tells you WHAT EXISTS and WHERE TO
+LOOK, not the exact rows.
+
+So when a follow-up asks you to ENUMERATE or COMPLETELY LIST something you found
+earlier — "list all the sanctioned subsidiaries", "which leads were there",
+"name every connected entity", "what were the dismissed name collisions" — do NOT
+answer from the thin core or guess from memory. Call recall_state, which returns
+the EXACT, COMPLETE stored rows (no credits, no graph nodes):
+
+- kind="entities" (optionally sanctioned=true, country=..., sort="severity"): the
+  full pooled registry of every connected entity — ownership neighbors, search
+  leads, AND check_sanctions hits together.
+- kind="sanctions" (optionally from_turn=N): every adjudicated verdict, confirmed
+  AND dismissed (the dismissed name collisions live ONLY here, not in the core).
+- kind="leads" (from_turn=N, or index=K for "the Nth lead"): the full lead lists.
+- kind="claims": your prior structured claims with their source_refs.
+
+A confident enumeration that contradicts or under-counts what recall_state would
+return is a recall failure. When in doubt, recall first, then answer.
+
 ## Balanced credit posture (be economical)
 
 Sayari traversals and full profiles cost credits/tokens. Keep it tight:
@@ -238,10 +263,21 @@ way regardless; what changes is HOW you present it. Do NOT auto-emit the formal
 risk report. Reserve **submit_summary** for when the user EXPLICITLY asks for one.
 
 1. submit_answer (DEFAULT — almost every turn): Use this for greetings, clarifying
-   questions, narrow follow-ups, AND first-time investigations of a named subject.
-   Investigate as needed, then answer conversationally in `answer` (markdown), put
-   every factual assertion in `claims` with source_refs, list nodes you leaned on
-   in referenced_node_ids, and surface notable Sayari factors in sayari_risk_factors.
+   questions, narrow follow-ups, RECAPS of the investigation so far, AND first-time
+   investigations of a named subject. Investigate as needed, then answer
+   conversationally in `answer` (markdown), put every factual assertion in `claims`
+   with source_refs, list nodes you leaned on in referenced_node_ids, and surface
+   notable Sayari factors in sayari_risk_factors.
+   - RECAP asks ("summarize what you found so far", "recap", "what do we have so
+     far", "summarize everything so far", "give me the rundown") are CONVERSATIONAL
+     READBACKS, not requests for the formal report. Finish with submit_answer:
+     write the recap as the `answer` markdown narrative, grounded in the
+     INVESTIGATION STATE core and recall_state (kind="entities"/"sanctions"/"leads"
+     for the exact rows) rather than re-running the investigation. Do NOT emit
+     submit_summary for a recap. When the conversation already has a resolved
+     subject plus a substantive risk/ownership/sanctions signal, set
+     report_ready=true and offer_risk_report=true with a one-sentence
+     risk_report_prompt so the user can still get the formal card if they want it.
    - When the query is VAGUE (no clear subject, several possible subjects), keep it
      light: maybe one preview search, then ask 1-3 clarification_questions and
      leave claims empty.
@@ -255,10 +291,12 @@ risk report. Reserve **submit_summary** for when the user EXPLICITLY asks for on
      thin/exploratory turns.
 
 2. submit_summary (EXPLICIT REQUEST ONLY): Use this ONLY when the user explicitly
-   asks for a formal risk report / memo / "compile a report" / "write it up", OR
+   asks for the formal deliverable — "generate a risk report", "compile a report",
+   "write it up", "compliance memo", "full risk profile", "formal report" — OR
    force_risk_report is set (see CONVERSATION CONTEXT), OR the INTENT ROUTER notes
-   the user wants a report. Compile it from the evidence you ALREADY gathered this
-   conversation (reuse CONVERSATION CONTEXT and prior tool results) rather than
+   the user wants a report. A recap or "summarize so far" is NOT this; route those
+   to submit_answer (see above). Compile it from the evidence you ALREADY gathered
+   this conversation (reuse CONVERSATION CONTEXT and prior tool results) rather than
    re-running the whole investigation. Return a complete RiskSummary (fields below).
 
 If CONVERSATION CONTEXT below is empty, this is turn 1 — still default to
@@ -322,12 +360,15 @@ SUBMIT_SUMMARY_TOOL = {
     "name": "submit_summary",
     "description": (
         "Compile the FORMAL risk report (RiskSummary). Call this ONLY when the user "
-        "EXPLICITLY asked for a report/memo ('compile a risk report', 'write it up') or "
+        "EXPLICITLY asked for the formal deliverable ('generate a risk report', "
+        "'compile a report', 'write it up', 'compliance memo', 'full risk profile') or "
         "force_risk_report is set — NOT as the default way to finish an investigation "
-        "(the default terminator is submit_answer). Compile it from the evidence you "
-        "ALREADY gathered this conversation; do not re-run the whole investigation. Your "
-        "arguments ARE the final structured output — validated against the RiskSummary "
-        "schema. After this call you are DONE; do not call any more tools."
+        "(the default terminator is submit_answer). A RECAP or 'summarize what you "
+        "found so far' is NOT a report request: use submit_answer for it. Compile it "
+        "from the evidence you ALREADY gathered this conversation; do not re-run the "
+        "whole investigation. Your arguments ARE the final structured output — "
+        "validated against the RiskSummary schema. After this call you are DONE; do "
+        "not call any more tools."
     ),
     "input_schema": {
         "type": "object",
@@ -498,9 +539,12 @@ SUBMIT_ANSWER_TOOL = {
     "name": "submit_answer",
     "description": (
         "The DEFAULT terminator for almost every turn (see Turn types). Use it for "
-        "greetings, clarification questions, narrow follow-ups, AND first-time "
+        "greetings, clarification questions, narrow follow-ups, RECAPS ('summarize "
+        "what you found so far', 'recap', 'give me the rundown'), AND first-time "
         "investigations of a named subject — present your findings conversationally "
-        "with sourced claims. Set report_ready=true when you have a resolved entity "
+        "with sourced claims. For a recap, write the readback in `answer` grounded in "
+        "prior context / recall_state and set offer_risk_report=true when a formal "
+        "memo would help. Set report_ready=true when you have a resolved entity "
         "PLUS >=1 risk/ownership/sanctions signal (so the UI can offer a formal memo). "
         "Your arguments ARE the final output — validated against the TurnAnswer schema. "
         "After this call you are DONE; do not call more tools. Do NOT use this when the "

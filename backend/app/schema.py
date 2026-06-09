@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # --- Risk signal taxonomy (bounded list, enforced via Literal) ---
 # The agent must only emit signals from this list. If it tries to invent a new
@@ -50,6 +50,22 @@ class SourceRef(BaseModel):
     # When the claim is backed by a Sayari risk factor, name it so the UI can
     # tie the claim back to the factor card and its traversal path.
     risk_factor: str | None = None
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_source(cls, v: object) -> object:
+        """Accept the `"sanctions"` source label and canonicalize it to
+        `"opensanctions"`. The watchlist source is spelled `"sanctions"` almost
+        everywhere else in the stack (SourceSystem, the SSE legend, recall_state,
+        sanctions.py), so the model frequently emits `source:"sanctions"` here and
+        the old strict Literal rejected it — a whole class of terminator-validation
+        failures and retry loops. We normalize to `"opensanctions"` (NOT the other
+        way) because that is the value the frontend reads to render the watchlist
+        chip, so existing readers and stored data stay byte-compatible. Runs before
+        the Literal check, so the stored/emitted value is always canonical."""
+        if isinstance(v, str) and v.strip().lower() == "sanctions":
+            return "opensanctions"
+        return v
 
 
 # --- Risk summary primitives ---

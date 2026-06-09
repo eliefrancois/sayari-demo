@@ -649,6 +649,216 @@ def _entity_registry_rows() -> list[tuple[str, str, bool, str]]:
     ]
 
 
+def _injection_shrink_rows() -> list[tuple[str, str, bool, str]]:
+    """Deterministic Phase C regression (doc 09 §C / §6): the injected memory core
+    is FIXED-SIZE navigation hints, and shrinking it did NOT cost recall fidelity.
+
+    Two properties the live harness can't observe (persist=False -> no state_doc):
+
+    1. Fixed budget. `_render_state_block` rendered over a SMALL investigation and
+       a HUGE one (300 entities, 60 leads, 80 sanctions rows) must be the same
+       bounded size — the core cannot grow with the case. This is the
+       context-stuffing fix as a hard assertion.
+
+    2. Faithful recall through the lean core. The canonical Rosneft turn-1 outcome
+       (a STRONG sanctions match on 'Rosneft Trading S.A.' that was DISMISSED as a
+       name collision) must (a) NOT be misrepresented as a confirmed hit in the
+       lean core, yet (b) stay byte-exact recoverable via the structured state the
+       core points at (sanctions ledger + projected registry), and (c) be
+       surfaced by the deterministic follow-up prefetch so the enumeration answers
+       in one hop. The shrink hides it from the inline dump WITHOUT dropping it."""
+    from app import conversations
+    from app.agent_common import (
+        _render_state_block,
+        build_followup_prefetch,
+    )
+
+    def make_doc(n_entities: int, n_leads: int, n_dismissed: int) -> dict[str, Any]:
+        leads = [
+            {"entity_id": f"lead-{i}", "label": f"Lead Co {i}", "type": "company",
+             "countries": ["CYP"], "sanctioned": False, "from_turn": 3,
+             "from_query": "Rosneft-linked trading companies"}
+            for i in range(n_leads)
+        ]
+        sanctions = [
+            {"sanctions_id": "ofac-confirmed", "matched_name": "Confirmed Bad Co",
+             "lists": ["OFAC SDN"], "verdict": "confirmed", "from_turn": 1},
+        ]
+        # The dismissed Rosneft name collision + padding dismissed rows.
+        sanctions.append({"sanctions_id": "ofac-30947", "matched_name": "Rosneft Trading S.A.",
+                          "lists": ["OFAC SDN"], "verdict": "dismissed", "from_turn": 1})
+        for i in range(n_dismissed):
+            sanctions.append({"sanctions_id": f"ofac-d{i}", "matched_name": f"Dismissed Co {i}",
+                              "lists": ["OFAC SDN"], "verdict": "dismissed", "from_turn": 1})
+        doc = {
+            **conversations._empty_state_doc(),
+            "resolved_entities": {
+                "rosneft global trade s.a.": {
+                    "entity_id": "sayari-rosneft-global", "label": "Rosneft Global Trade S.A.",
+                    "type": "company", "sanctioned": False,
+                    "first_seen_turn": 1, "last_seen_turn": 3,
+                },
+            },
+            "leads": leads,
+            "sanctions_adjudicated": sanctions,
+            "named_ids": {f"named-{i}": {"label": f"Named {i}", "type": "company"}
+                          for i in range(n_entities)},
+            "pinned_node_ids": [f"pin-{i}" for i in range(20)],
+        }
+        doc["entities"] = conversations._project_entities(doc)
+        return doc
+
+    small = make_doc(4, 3, 1)
+    large = make_doc(300, 60, 80)
+    small_block = "\n".join(_render_state_block(small))
+    large_block = "\n".join(_render_state_block(large))
+
+    # (1) Fixed budget: the huge case must render a bounded core that's not
+    # materially larger than the small one (only count digits differ).
+    fixed_budget = len(large_block) <= 900 and (len(large_block) - len(small_block)) <= 80
+
+    # (2a) The lean core must NOT inline the dismissed name as a hit.
+    dismissed_not_inlined = "Rosneft Trading" not in large_block
+
+    # (2b) The dismissed row stays byte-exact in the structured state the core
+    # points at, and projects into the registry as a sanctioned entity — the
+    # recall_state(kind="sanctions"/"entities") path the agent is told to use.
+    ledger_names = [r.get("matched_name") for r in large["sanctions_adjudicated"]]
+    recoverable_in_ledger = "Rosneft Trading S.A." in ledger_names
+    recoverable_in_registry = (
+        "ofac-30947" in large["entities"]
+        and large["entities"]["ofac-30947"].get("sanctioned") is True
+    )
+
+    # (2c) The deterministic follow-up prefetch surfaces it for the common ask.
+    prefetch = build_followup_prefetch(large, "which subsidiaries were sanctioned again?")
+    prefetch_surfaces = "Rosneft Trading S.A." in prefetch and "dismissed" in prefetch
+
+    case = "injection_shrink"
+    return [
+        (case, "fixed_budget_core", fixed_budget,
+         f"small={len(small_block)}ch large={len(large_block)}ch"),
+        (case, "dismissed_not_inlined", dismissed_not_inlined,
+         "lean core omits the dismissed name"),
+        (case, "recall_faithful_ledger", recoverable_in_ledger,
+         f"ledger_names={[n for n in ledger_names if 'Rosneft' in str(n)]}"),
+        (case, "recall_faithful_registry", recoverable_in_registry,
+         "dismissed hit is a first-class sanctioned registry entity"),
+        (case, "prefetch_surfaces_dismissed", prefetch_surfaces,
+         f"prefetch_len={len(prefetch)}ch"),
+    ]
+
+
+def _recap_routing_rows() -> list[tuple[str, str, bool, str]]:
+    """Deterministic recap-routing regression: a recap-style ask ('summarize
+    everything you found so far', 'recap', 'what do we have so far') must route to
+    the LIGHTWEIGHT submit_answer / TurnAnswer terminator, NOT the heavy
+    submit_summary / RiskSummary deliverable.
+
+    The routing decision the LLM makes isn't deterministic, so we pin the
+    DETERMINISTIC layer the brief asked for: the rule-based recap detector +
+    guidance. A recap (a) is detected, (b) routes to conversational_followup with
+    wants_report=false (so the prompt never gets the 'finish with submit_summary'
+    nudge), (c) emits guidance that names submit_answer and forbids submit_summary,
+    and (d) does NOT fire on turn 1 (nothing to recap) or on a real 'summarize X's
+    ownership' investigation ask (no false positive). We also confirm the
+    submit_answer terminator validates into a TurnAnswer."""
+    from app import intent
+    from app.agent_graph import _validate_terminator
+    from app.schema import TurnAnswer
+
+    prior = "Turn 1: investigated Rosneft. Found state ownership + 2 sanctioned subsidiaries."
+
+    detected = intent._is_recap("Summarize everything you found on Rosneft so far")
+    detected_recap_word = intent._is_recap("recap")
+    detected_rundown = intent._is_recap("give me the rundown")
+    # No false positive: a real investigation ask that happens to say 'summarize'.
+    no_fp_profile = not intent._is_recap("summarize Rosneft's ownership structure")
+
+    res = intent._recap_shortcut("summarize what you found so far", prior)
+    routed_followup = bool(res) and res.get("intent") == "conversational_followup"
+    no_report = bool(res) and res.get("wants_report") is False
+
+    # Turn 1 (no prior context) must NOT be treated as a recap shortcut.
+    turn1 = intent._recap_shortcut("summarize what you found so far", "")
+    turn1_skips = turn1 is None
+
+    guidance = intent.build_guidance(res or {})
+    # The recap overlay names submit_answer and the report nudge line ('finishing
+    # with submit_summary is appropriate') is absent.
+    guidance_names_answer = "submit_answer" in guidance
+    no_summary_nudge = "submit_summary is appropriate" not in guidance
+
+    # The submit_answer terminator validates into a TurnAnswer (the light shape).
+    ta = _validate_terminator(
+        "submit_answer",
+        {"answer": "Here's the recap so far.", "report_ready": True, "offer_risk_report": True},
+        [],
+    )
+    is_turnanswer = isinstance(ta, TurnAnswer)
+
+    case = "recap_routing"
+    return [
+        (case, "recap_detected", detected and detected_recap_word and detected_rundown,
+         f"so_far={detected} recap={detected_recap_word} rundown={detected_rundown}"),
+        (case, "no_false_positive", no_fp_profile, "‘summarize X ownership’ is not a recap"),
+        (case, "routes_followup", routed_followup, f"intent={res.get('intent') if res else None}"),
+        (case, "wants_report_false", no_report, f"wants_report={res.get('wants_report') if res else None}"),
+        (case, "turn1_not_recap", turn1_skips, "no prior context -> not a recap shortcut"),
+        (case, "guidance_picks_answer", guidance_names_answer and no_summary_nudge,
+         "guidance names submit_answer, no submit_summary nudge"),
+        (case, "terminator_is_turnanswer", is_turnanswer, f"type={type(ta).__name__}"),
+    ]
+
+
+def _source_enum_rows() -> list[tuple[str, str, bool, str]]:
+    """Deterministic source-enum normalization regression: a model emitting
+    source:"sanctions" (the label used everywhere else in the stack) must NOT fail
+    terminator validation. We coerce "sanctions" -> the canonical "opensanctions"
+    pre-validation, so existing readers/frontend stay byte-compatible. Asserts the
+    coercion on a bare SourceRef AND through a full TurnAnswer terminator, and that
+    the legit values still pass unchanged."""
+    from app.agent_graph import _validate_terminator
+    from app.schema import SourceRef
+
+    # Bare SourceRef: "sanctions" coerces to the canonical "opensanctions".
+    ref = SourceRef(source="sanctions", sanctions_id="ofac-30947")
+    coerced = ref.source == "opensanctions"
+    # Canonical values still pass unchanged.
+    legit = (
+        SourceRef(source="opensanctions", sanctions_id="x").source == "opensanctions"
+        and SourceRef(source="sayari", sayari_entity_id="y").source == "sayari"
+        and SourceRef(source="icij", node_id="z").source == "icij"
+    )
+
+    # Through a full terminator: a TurnAnswer whose claim cites source:"sanctions"
+    # validates (previously raised ValidationError -> retry loop) and stores the
+    # canonical label.
+    args = {
+        "answer": "Rosneft Trading S.A. is OFAC SDN-listed.",
+        "claims": [{
+            "text": "Rosneft Trading S.A. appears on the OFAC SDN list.",
+            "source_refs": [{"source": "sanctions", "sanctions_id": "ofac-30947"}],
+            "confidence": "high",
+        }],
+    }
+    try:
+        ta = _validate_terminator("submit_answer", args, [])
+        terminator_ok = ta.claims[0].source_refs[0].source == "opensanctions"
+        err = ""
+    except Exception as e:  # a failure here is the exact regression we're fixing
+        terminator_ok = False
+        err = f"raised {type(e).__name__}"
+
+    case = "source_enum"
+    return [
+        (case, "sanctions_coerced", coerced, f"source={ref.source}"),
+        (case, "canonical_unchanged", legit, "icij/opensanctions/sayari still valid"),
+        (case, "terminator_accepts_sanctions", terminator_ok,
+         err or "claim source 'sanctions' -> 'opensanctions'"),
+    ]
+
+
 async def _run_local() -> int:
     print(f"Running {len(CASES)} eval cases against agent_graph (live)...\n")
     total = 0
@@ -661,6 +871,9 @@ async def _run_local() -> int:
     for name, fn in (
         ("rosneft_memory_writepath", _memory_writepath_rows),
         ("entity_registry", _entity_registry_rows),
+        ("injection_shrink", _injection_shrink_rows),
+        ("recap_routing", _recap_routing_rows),
+        ("source_enum", _source_enum_rows),
     ):
         try:
             for r in fn():

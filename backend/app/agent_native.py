@@ -51,6 +51,29 @@ def _client() -> AsyncAnthropic:
     return AsyncAnthropic(api_key=get_settings().anthropic_api_key)
 
 
+def _terminator_retry_content(
+    name: str, e: ValidationError, stop_reason: str | None
+) -> str:
+    """The tool_result content fed back after a terminator failed validation.
+
+    Truncation-aware: when the model hit the output ceiling (stop_reason ==
+    "max_tokens") its tool-call args came back cut off (unparseable / missing
+    fields). Dumping the giant e.errors() blob just grows the input and reinforces
+    the loop, so we send a SHORT targeted nudge to emit a SMALLER terminator.
+    Otherwise (a genuine shape error) the structured errors are the useful signal,
+    so we keep them."""
+    if stop_reason == "max_tokens":
+        return json.dumps({
+            "error": (
+                f"Your previous {name} was CUT OFF at the output token limit, so its "
+                "arguments were truncated and could not be parsed. Re-emit it COMPLETE "
+                "but SHORTER: keep only the most important claims (fewer, terser), trim "
+                "long narrative text, and make sure the tool-call JSON is fully closed."
+            )
+        })
+    return json.dumps({"validation_error": e.errors()})
+
+
 async def _emit(session_id: str, type_: str, **data: Any) -> None:
     """Append an SSE event to the session queue. Frontend consumes via /stream/:id."""
     await sessions.append_event(session_id, {"type": type_, "data": data})
@@ -133,10 +156,16 @@ async def run_investigation(session_id: str, user_query: str) -> None:
                                 args_with_used["tools_used"] = sorted(set(tools_used))
                             submitted_summary = RiskSummary(**args_with_used)
                         except ValidationError as e:
+                            log.warning(
+                                "terminator validation failed name=%s errors=%s",
+                                "submit_summary", e.errors(),
+                            )
                             tool_results_for_next_turn.append({
                                 "type": "tool_result",
                                 "tool_use_id": block.id,
-                                "content": json.dumps({"validation_error": e.errors()}),
+                                "content": _terminator_retry_content(
+                                    "submit_summary", e, resp.stop_reason
+                                ),
                                 "is_error": True,
                             })
                             await _emit(
@@ -398,10 +427,16 @@ async def run_turn(
                                 args_with_used["tools_used"] = sorted(set(tools_used))
                             submitted_summary = RiskSummary(**args_with_used)
                         except ValidationError as e:
+                            log.warning(
+                                "terminator validation failed name=%s errors=%s",
+                                "submit_summary", e.errors(),
+                            )
                             tool_results_for_next_turn.append({
                                 "type": "tool_result",
                                 "tool_use_id": block.id,
-                                "content": json.dumps({"validation_error": e.errors()}),
+                                "content": _terminator_retry_content(
+                                    "submit_summary", e, resp.stop_reason
+                                ),
                                 "is_error": True,
                             })
                             await _emit_conv(
@@ -417,10 +452,16 @@ async def run_turn(
                                 args_with_used["tools_used"] = sorted(set(tools_used))
                             submitted_answer = TurnAnswer(**args_with_used)
                         except ValidationError as e:
+                            log.warning(
+                                "terminator validation failed name=%s errors=%s",
+                                "submit_answer", e.errors(),
+                            )
                             tool_results_for_next_turn.append({
                                 "type": "tool_result",
                                 "tool_use_id": block.id,
-                                "content": json.dumps({"validation_error": e.errors()}),
+                                "content": _terminator_retry_content(
+                                    "submit_answer", e, resp.stop_reason
+                                ),
                                 "is_error": True,
                             })
                             await _emit_conv(

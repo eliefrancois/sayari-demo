@@ -431,6 +431,29 @@ injects it. This is retrieval (a deterministic keyword match producing one
 bounded result), not stuffing (everything, every turn). It saves a round-trip on
 the common follow-up without re-introducing the anti-pattern. Strictly optional.
 
+> **What shipped (Phase C, 2026-06-07).** `_render_state_block` was rewritten
+> from a row dump into FIXED-BUDGET navigation hints: primary subject(s) (from
+> `resolved_entities`, newest first, cap 2), pinned ids (cap 8), one header line
+> per recent search (cap 3), the top few CONFIRMED sanctions BY NAME (cap 5,
+> `confirmed` verdicts only so the core can't misrepresent a dismissed name
+> collision), and a single registry pointer (`N entities tracked, M sanctioned`
+> + how to rank/enumerate via `recall_state`). The old inline top-10 entity dump
+> and the `sanctions_id -> verdict` list are gone; the agent pages exact rows
+> with `recall_state`. The up-to-30-node "KNOWN GRAPH ENTITIES" roster
+> (doc §6.3) is dropped on the graph path (the registry pointer covers it) and
+> survives only as a small bounded fallback (cap 8) for the native loop, which
+> keeps no `state_doc`. Measured on a representative multi-turn investigation,
+> the injected core went from ~461/695/754 tokens (small/medium/large case) to a
+> flat ~251/260/261 tokens, i.e. 45%/62%/65% smaller, and crucially FLAT as the
+> case grows. The optional Phase 2.5 prefetch shipped too: for a
+> `conversational_followup` whose message keyword-matches a bucket
+> ("sanctioned"/"subsidiar"/"sdn" or "lead"/"candidate"), `build_followup_prefetch`
+> injects ONE bounded slice (<=6 rows; the sanctions slice surfaces confirmed AND
+> dismissed verdicts BY NAME, so the canonical Rosneft enumeration answers in one
+> hop). The prompt + `conversational_followup` intent guidance were tightened so
+> the agent reaches for `recall_state` on any exact/complete enumeration rather
+> than guessing from the now-intentionally-thin core.
+
 ---
 
 ## 7. Compaction / eviction
@@ -491,7 +514,7 @@ durable.
 | --- | --- | --- | --- |
 | **A. Widen the write path** | small | In the projection: deposit answer-turn `raw_strong_hits` as dismissed `sanctions_ledger` rows; deposit `referenced_node_ids`, `claims` + `source_refs`, and `sayari_risk_factors` paths. | The Rosneft drift directly. Named-but-not-traversed entities now persist. |
 | **B. Entity registry** (SHIPPED 2026-06-06) | medium | Unify `resolved_entities` + `named_ids` into id-keyed `entities`; `deposit` from ALL tools (search, profile, ownership, watchlist, sanctions, ICIJ); extend `recall_state` with `kind="entities"` / `kind="claims"`. | Doc 08's "two pipes" disease and the registry contract. |
-| **C. Shrink injection** | small | Cut the 30-node roster to pinned + primary; hold `_render_state_block` to a fixed token budget; optional intent prefetch (§6.4). | The context-stuffing smell. Flat token cost as the case grows. |
+| **C. Shrink injection** (SHIPPED 2026-06-07) | small | Cut the 30-node roster to pinned + primary; hold `_render_state_block` to a fixed token budget; optional intent prefetch (§6.4). | The context-stuffing smell. Flat token cost as the case grows. |
 | **D. Episodic vector** | real build | Provision Upstash Vector; per-turn episode write at finalize; `recall_memory` tool, recency x salience ranked, behind a flag. | Turn-10+ recall of old episodes. New infra + secrets. |
 | **E. Provenance / claims** | small-medium | Every claim and entity carries `source_refs`; the renderer cites them compactly. | "Re-cite a turn-2 finding on turn 9 without redoing the work." |
 | **F. Multi-turn memory evals** | medium | Multi-turn eval harness; cases asserting recall without re-running tools. | Locks A-E in; catches regressions. |

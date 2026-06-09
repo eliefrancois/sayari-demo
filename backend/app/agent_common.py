@@ -203,7 +203,12 @@ def slim_sayari_record(record: dict[str, Any]) -> dict[str, Any]:
 
 MODEL = "claude-sonnet-4-5-20250929"  # dated snapshot = reproducible demo behavior
 MAX_ITERATIONS = 20  # safety bail-out; real investigations finish in 6-12
-MAX_TOKENS_PER_TURN = 4096
+# Output ceiling per model call. A legit large RiskSummary (many claims, each with
+# source_refs + sanctions_hits + risk-factor paths) can exceed 4096 and get cut off
+# mid tool-call JSON, which then fails validation and burns retries. 8192 gives the
+# formal report room to land in one shot. Sonnet 4.5 supports it and you only pay
+# for tokens actually generated, so the conversational default turn costs no more.
+MAX_TOKENS_PER_TURN = 8192
 
 # Per-turn tool-call budget (soft cap). "Answer any question" must not let a
 # single turn explode into dozens of tool calls. When the agent crosses this, we
@@ -228,69 +233,88 @@ def budget_nudge(tool_calls_so_far: int) -> str | None:
 
 # --- Compressed episodic context ------------------------------------------
 
+# Phase C (doc 09 §6) fixed-budget caps for the injected INVESTIGATION STATE
+# core. These are HARD caps that do NOT scale with investigation size: the core
+# is navigation hints (what exists + where to look), never the data itself. The
+# agent pages exact/complete rows in with recall_state. Bumping a cap is the one
+# knob that grows the core, so keep them tiny and deliberate.
+_STATE_PRIMARY_CAP = 2  # primary subject(s) under active investigation
+_STATE_PINNED_CAP = 8  # pinned node ids surfaced inline
+_STATE_LEADSETS_CAP = 3  # one header line per recent search
+_STATE_SANCTIONS_CAP = 5  # confirmed sanctions named inline
+# Fallback graph roster (native loop only — no state_doc). The registry pointer
+# replaces it on the graph path; this just bounds the legacy path.
+_ROSTER_FALLBACK_CAP = 8
+
+
+def _is_sdn(lists: Any) -> bool:
+    """True if any list label is the OFAC SDN (blocked) list — NOT the OFAC
+    Consolidated/non-SDN list (same name-collision discipline the prompt and the
+    registry enforce). Local so agent_common stays dependency-light."""
+    for x in lists or []:
+        l = str(x or "").lower()
+        if "sdn" in l and "non-sdn" not in l and "non sdn" not in l and "consolidated" not in l:
+            return True
+    return False
+
 
 def _render_state_block(state_doc: dict[str, Any] | None) -> list[str]:
-    """The small, ID-rich `INVESTIGATION STATE` core injected ahead of the prose
-    digest (the Letta minimal-inline + retrieve-on-demand split).
+    """The small, FIXED-BUDGET `INVESTIGATION STATE` core injected ahead of the
+    prose digest (the Letta minimal-inline + retrieve-on-demand split, doc 09
+    §6.1). Phase C shrank this from a row dump to pure NAVIGATION HINTS whose
+    size does NOT grow with the investigation:
 
-    Keeps only essentials always-in-context — resolved subjects (name->id),
-    pinned ids, a one-line lead-set header per recent search, and the (small,
-    high-value) sanctions verdicts — and points the agent at the `recall_state`
-    tool to enumerate full lead lists / resolved-entity detail on demand. Empty
-    list when there's nothing structured yet (e.g. turn 1 or eval mode)."""
+      - the primary subject(s) under investigation (label=id),
+      - pinned node ids (a handful),
+      - one header line per recent search (count + query),
+      - the top few CONFIRMED sanctions BY NAME (high-value, accurate), and
+      - a registry pointer (how many entities are tracked + how to rank/enumerate).
+
+    It deliberately does NOT inject the full entity table or full lead lists —
+    the agent calls `recall_state` for exact, complete rows on demand. Empty list
+    when there's nothing structured yet (e.g. turn 1 or eval mode)."""
     if not state_doc:
         return []
     # Phase B: the unified registry is the entity source of truth (it folds
     # resolved subjects, leads, cached names, AND sanctions hits into one
-    # id-keyed pool). Same fixed budget/caps as before — the data source moved,
-    # the size did not (the injection shrink is Phase C, deliberately separate).
+    # id-keyed pool). Phase C reads it only for the headline subject(s) + counts.
     entities = state_doc.get("entities") or {}
     leads = state_doc.get("leads") or []
     sanctions_adj = state_doc.get("sanctions_adjudicated") or []
     pinned = state_doc.get("pinned_node_ids") or []
-    if not (entities or leads or sanctions_adj or pinned):
+    resolved = state_doc.get("resolved_entities") or {}
+    if not (entities or leads or sanctions_adj or pinned or resolved):
         return []
 
     lines: list[str] = [
-        "INVESTIGATION STATE (structured exact recall — reuse these IDs, do NOT "
-        "re-search; call recall_state to pull full detail):"
+        "INVESTIGATION STATE (navigation hints only — reuse these IDs, do NOT "
+        "re-search; call recall_state for exact/complete rows):"
     ]
 
-    # Entities (small, high-value): label->id, newest-seen first, capped. Sourced
-    # from the unified registry so sanctioned connected entities (incl. ones that
-    # only ever appeared via check_sanctions) show up here too.
-    if entities:
-        recs = sorted(
-            (r for r in entities.values() if isinstance(r, dict)),
-            key=lambda r: r.get("last_seen_turn") or 0,
-            reverse=True,
-        )
-        shown = recs[:10]
+    # Primary subject(s): the traversed/profiled subjects (resolved_entities),
+    # newest first, capped tiny. NOT raw leads or sanctions-only entities — this
+    # names the current focus; the registry pointer below covers the full pool.
+    subj_recs = sorted(
+        (r for r in resolved.values() if isinstance(r, dict) and r.get("entity_id")),
+        key=lambda r: r.get("last_seen_turn") or 0,
+        reverse=True,
+    )
+    if subj_recs:
         parts: list[str] = []
-        for r in shown:
+        for r in subj_recs[:_STATE_PRIMARY_CAP]:
             flags = []
-            if r.get("type"):
-                flags.append(str(r["type"]))
-            if r.get("is_sdn"):
-                flags.append("OFAC SDN")
-            elif r.get("sanctioned"):
+            if r.get("sanctioned"):
                 flags.append("SANCTIONED")
             if r.get("pep"):
                 flags.append("PEP")
             suffix = f" ({', '.join(flags)})" if flags else ""
-            parts.append(f"{r.get('label')}={r.get('id')}{suffix}")
-        line = "Entities: " + "; ".join(parts)
-        if len(recs) > len(shown):
-            line += (
-                f'; ...+{len(recs) - len(shown)} more '
-                '(recall_state kind="entities", sort="severity" to rank)'
-            )
-        lines.append(line)
+            parts.append(f"{r.get('label')}={r.get('entity_id')}{suffix}")
+        lines.append("Primary subject(s): " + "; ".join(parts))
 
     if pinned:
-        lines.append("Pinned node ids: " + ", ".join(str(p) for p in pinned[:20]))
+        lines.append("Pinned node ids: " + ", ".join(str(p) for p in pinned[:_STATE_PINNED_CAP]))
 
-    # Lead-set headers: one line per recent search, true total + recall pointer.
+    # Lead-set headers: one line per recent search, true count + recall pointer.
     if leads:
         sets: dict[Any, dict[str, Any]] = {}
         for l in leads:
@@ -299,7 +323,7 @@ def _render_state_block(state_doc: dict[str, Any] | None) -> list[str]:
             ft = l.get("from_turn")
             s = sets.setdefault(ft, {"count": 0, "query": l.get("from_query")})
             s["count"] += 1
-        for ft in sorted((k for k in sets if k is not None), reverse=True)[:3]:
+        for ft in sorted((k for k in sets if k is not None), reverse=True)[:_STATE_LEADSETS_CAP]:
             s = sets[ft]
             q = f' ("{s["query"]}")' if s.get("query") else ""
             lines.append(
@@ -307,17 +331,43 @@ def _render_state_block(state_doc: dict[str, Any] | None) -> list[str]:
                 f'call recall_state(kind="leads", from_turn={ft}) to enumerate.'
             )
 
-    # Sanctions verdicts (small, high-value): render the ids+verdicts in full.
-    if sanctions_adj:
-        verdicts = [
-            f'{row.get("sanctions_id")} -> {row.get("verdict")}'
-            for row in sanctions_adj[:10]
-            if isinstance(row, dict)
-        ]
-        line = "Sanctions adjudicated: " + "; ".join(verdicts)
-        if len(sanctions_adj) > 10:
-            line += f"; ...+{len(sanctions_adj) - 10} more"
-        lines.append(line + ' (recall_state kind="sanctions" for detail)')
+    # Confirmed sanctions BY NAME (high-value, accurate): only `confirmed`
+    # verdicts go inline so the core can't misrepresent a dismissed name
+    # collision as a hit. Dismissed rows stay recoverable via recall_state.
+    confirmed = [
+        r for r in sanctions_adj
+        if isinstance(r, dict) and r.get("verdict") == "confirmed"
+    ]
+    if confirmed:
+        named: list[str] = []
+        for r in confirmed[:_STATE_SANCTIONS_CAP]:
+            nm = r.get("matched_name") or r.get("sanctions_id")
+            lists = r.get("lists") or []
+            if _is_sdn(lists):
+                tag = " [OFAC SDN]"
+            elif lists:
+                tag = f" [{lists[0]}]"
+            else:
+                tag = ""
+            named.append(f"{nm}{tag}")
+        line = "Confirmed sanctions: " + "; ".join(named)
+        if len(confirmed) > _STATE_SANCTIONS_CAP:
+            line += f"; +{len(confirmed) - _STATE_SANCTIONS_CAP} more"
+        lines.append(line + ' (recall_state kind="sanctions" for all verdicts).')
+
+    # Registry pointer (replaces the old inline entity dump): the total tracked +
+    # how to rank/enumerate. This is the fixed-size handle to the full pool.
+    if entities:
+        n_sanc = sum(
+            1 for r in entities.values()
+            if isinstance(r, dict) and r.get("sanctioned")
+        )
+        sanc_note = f", {n_sanc} sanctioned" if n_sanc else ""
+        lines.append(
+            f"Registry: {len(entities)} connected entities tracked{sanc_note}. "
+            'recall_state(kind="entities", sort="severity") to rank/enumerate; '
+            'kind="claims" for prior claims.'
+        )
 
     return lines
 
@@ -351,15 +401,22 @@ def build_context_block(
 ) -> str:
     """Compressed episodic memory injected ahead of the user message.
 
-    Cheap to build (no extra LLM call): the structured `INVESTIGATION STATE`
-    core (resolved ids, lead-set headers, sanctions verdicts — the source of
-    truth for IDs) on top of a running prose digest + a compact roster of graph
-    entities so the agent reuses node_ids instead of re-searching subjects it
-    already investigated. `state_doc` is optional so the native loop, which does
-    not maintain structured state, keeps its existing behavior unchanged."""
-    state_lines = _render_state_block(state_doc)
+    Cheap to build (no extra LLM call): the fixed-budget `INVESTIGATION STATE`
+    core (primary subject, pinned ids, lead-set headers, confirmed sanctions, and
+    a registry pointer — the navigation handle into structured state) on top of a
+    running prose digest. `state_doc` is optional so the native loop, which does
+    not maintain structured state, keeps its existing behavior unchanged.
 
-    if not context and not graph.get("nodes") and not state_lines:
+    Phase C (doc 09 §6.3): the up-to-30-node "KNOWN GRAPH ENTITIES" roster was a
+    capped, truncating UI artifact that leaked into the memory mechanism and
+    scaled the injection with case size. When the registry-backed state core is
+    present (the graph impl) it already names the subject and points at
+    recall_state for the full pool, so the roster is dropped. It survives only as
+    a small bounded FALLBACK for the native loop (no state_doc)."""
+    state_lines = _render_state_block(state_doc)
+    nodes = graph.get("nodes", [])
+
+    if not context and not nodes and not state_lines:
         # Turn 1 — nothing to carry forward.
         return f"force_risk_report: {str(force_risk_report).lower()}\n"
 
@@ -371,18 +428,20 @@ def build_context_block(
     lines.append("CONVERSATION CONTEXT (prior turns):")
     lines.append(context.strip() or "(none yet)")
 
-    nodes = graph.get("nodes", [])
-    if nodes:
+    # Fallback graph roster ONLY when there's no structured state core (native
+    # loop). On the graph path the INVESTIGATION STATE core + recall_state cover
+    # this, so we keep injection lean and skip it entirely.
+    if nodes and not state_lines:
         lines.append("")
         lines.append(
             "KNOWN GRAPH ENTITIES (reuse these node_ids in follow-ups; do NOT "
             "re-run search_entity on a subject already here):"
         )
-        for n in nodes[:30]:
+        for n in nodes[:_ROSTER_FALLBACK_CAP]:
             label = n.get("label") or n.get("type") or "Node"
             lines.append(f"- {n.get('name', '?')} (id={n.get('id')}) [{label}]")
-        if len(nodes) > 30:
-            lines.append(f"- ...and {len(nodes) - 30} more")
+        if len(nodes) > _ROSTER_FALLBACK_CAP:
+            lines.append(f"- ...and {len(nodes) - _ROSTER_FALLBACK_CAP} more")
 
     if pinned_node_ids:
         lines.append("")
@@ -399,6 +458,83 @@ def build_context_block(
 def build_turn_message(context_block: str, user_message: str, turn_index: int) -> str:
     """The single user-role message text for a turn: context + the message."""
     return f"{context_block}\n---\nUSER MESSAGE (turn {turn_index}):\n{user_message}"
+
+
+# --- Phase 2.5: deterministic follow-up prefetch (doc 09 §6.4) -------------
+# Retrieval (a keyword match -> ONE bounded slice), NOT stuffing (everything,
+# every turn). When a conversational follow-up clearly asks to enumerate a known
+# bucket ("which subsidiaries were sanctioned", "list the leads"), the lean core
+# would force a recall_state round-trip; this injects the slice up front so the
+# common follow-up answers in one hop. Strictly bounded (a few rows) and only
+# fires on a keyword hit, so it can't reintroduce the context-stuffing smell.
+
+_PREFETCH_SANCTIONS_KEYWORDS = ("sanction", "sdn", "watchlist", "blocked", "subsidiar")
+_PREFETCH_LEADS_KEYWORDS = ("lead", "search result", "candidate")
+_PREFETCH_ROW_CAP = 6
+
+
+def build_followup_prefetch(
+    state_doc: dict[str, Any] | None,
+    user_message: str,
+) -> str:
+    """ONE bounded, retrieval-shaped slice for a follow-up whose keywords match a
+    known bucket. Returns "" when nothing matches or there's no state. Pure and
+    deterministic — reads only `state_doc`, spends no credits, makes no LLM call.
+    Designed to fire only for `conversational_followup` (the caller gates it)."""
+    if not state_doc or not user_message:
+        return ""
+    msg = user_message.lower()
+
+    if any(k in msg for k in _PREFETCH_SANCTIONS_KEYWORDS):
+        rows = [r for r in (state_doc.get("sanctions_adjudicated") or []) if isinstance(r, dict)]
+        if rows:
+            # confirmed first, then dismissed (the Rosneft name-collision rows the
+            # agent must be able to re-name without re-running check_sanctions).
+            rows.sort(key=lambda r: 0 if r.get("verdict") == "confirmed" else 1)
+            out: list[str] = []
+            for r in rows[:_PREFETCH_ROW_CAP]:
+                nm = r.get("matched_name") or r.get("sanctions_id")
+                tag = " [OFAC SDN]" if _is_sdn(r.get("lists")) else (
+                    f" [{(r.get('lists') or ['?'])[0]}]"
+                )
+                out.append(f"- {nm}{tag} — {r.get('verdict')} (sanctions_id={r.get('sanctions_id')})")
+            extra = (
+                f"\n(+{len(rows) - _PREFETCH_ROW_CAP} more — recall_state kind=\"sanctions\")"
+                if len(rows) > _PREFETCH_ROW_CAP else ""
+            )
+            return (
+                "PREFETCHED sanctions ledger (deterministic match on your question — "
+                "exact rows, confirmed AND dismissed; recall_state kind=\"sanctions\" "
+                "for the rest):\n" + "\n".join(out) + extra
+            )
+
+    if any(k in msg for k in _PREFETCH_LEADS_KEYWORDS):
+        leads = [l for l in (state_doc.get("leads") or []) if isinstance(l, dict)]
+        if leads:
+            turns = [l.get("from_turn") for l in leads if l.get("from_turn") is not None]
+            recent = max(turns) if turns else None
+            recent_set = [l for l in leads if l.get("from_turn") == recent] if recent is not None else leads
+            out = []
+            for i, l in enumerate(recent_set[:_PREFETCH_ROW_CAP], start=1):
+                flags = []
+                if l.get("sanctioned"):
+                    flags.append("SANCTIONED")
+                if l.get("pep"):
+                    flags.append("PEP")
+                suffix = f" ({', '.join(flags)})" if flags else ""
+                out.append(f"- [{i}] {l.get('label')}{suffix} (id={l.get('entity_id')})")
+            extra = (
+                f"\n(+{len(recent_set) - _PREFETCH_ROW_CAP} more — recall_state kind=\"leads\")"
+                if len(recent_set) > _PREFETCH_ROW_CAP else ""
+            )
+            hdr = f"turn {recent}" if recent is not None else "most recent search"
+            return (
+                f"PREFETCHED leads from {hdr} (deterministic match on your question — "
+                "exact rows; recall_state kind=\"leads\" with from_turn/index for more):\n"
+                + "\n".join(out) + extra
+            )
+
+    return ""
 
 
 # --- Per-turn digests (feed the compressed episodic memory) ----------------
