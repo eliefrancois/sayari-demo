@@ -860,6 +860,52 @@ def _source_enum_rows() -> list[tuple[str, str, bool, str]]:
     ]
 
 
+def _conversation_index_rows() -> list[tuple[str, str, bool, str]]:
+    """Deterministic conversation-index regression (the history menu): the pure
+    list assembler (`conversations.assemble_conversation_list`) that GET
+    /conversations runs over the ZREVRANGE page + pipelined meta/state fetches.
+
+    Pins three properties, no Redis: (1) live members keep ZSET (recency)
+    order and surface title/turn_count/state; (2) a member whose meta expired
+    (per-key 24h TTL beat the index entry) is FILTERED OUT and returned as dead
+    so the endpoint can lazily ZREM it — same for unparseable meta; (3) a
+    missing state falls back to 'idle' rather than dropping the row."""
+    import json as _json
+
+    from app import conversations
+
+    meta_a = _json.dumps({"title": "Gazprom", "created_at": 100, "updated_at": 300, "turn_count": 2})
+    meta_c = _json.dumps({"title": "Rosneft Trading", "created_at": 50, "updated_at": 200, "turn_count": 5})
+    ids = ["a", "b-expired", "c", "d-garbage"]
+    raw = [
+        meta_a, "idle",        # a: live
+        None, None,            # b: meta expired -> dead
+        meta_c, None,          # c: live, state key expired -> 'idle' fallback
+        "{not json", "idle",   # d: unparseable meta -> dead
+    ]
+    items, dead = conversations.assemble_conversation_list(ids, raw)
+
+    order_ok = [it["conversation_id"] for it in items] == ["a", "c"]
+    shape_ok = (
+        items
+        and items[0]["title"] == "Gazprom"
+        and items[0]["turn_count"] == 2
+        and items[0]["updated_at"] == 300
+        and items[0]["state"] == "idle"
+    )
+    dead_ok = dead == ["b-expired", "d-garbage"]
+    state_fallback = len(items) == 2 and items[1]["state"] == "idle"
+
+    case = "conversation_index"
+    return [
+        (case, "live_members_in_zset_order", bool(order_ok and shape_ok),
+         f"items={[it['conversation_id'] for it in items]}"),
+        (case, "expired_meta_filtered_as_dead", dead_ok, f"dead={dead}"),
+        (case, "missing_state_falls_back_idle", state_fallback,
+         f"state={items[1]['state'] if len(items) > 1 else None}"),
+    ]
+
+
 def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     """Deterministic Tier 2 (trade + supply-chain) regression: the dual-use HS
     screen and the shortest-path sanctioned-intermediary flag, asserted on the
@@ -1148,6 +1194,7 @@ async def _run_local() -> int:
         ("injection_shrink", _injection_shrink_rows),
         ("recap_routing", _recap_routing_rows),
         ("source_enum", _source_enum_rows),
+        ("conversation_index", _conversation_index_rows),
         ("tier2_trade", _tier2_trade_rows),
     ):
         try:

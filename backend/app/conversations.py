@@ -15,6 +15,10 @@ resume an investigation across turns and page reloads:
   conversation:{id}:graph       -> JSON {nodes, edges} accumulated across turns
   conversation:{id}:state_doc   -> JSON structured investigation state (exact recall)
 
+Plus one global key — the recents index behind GET /conversations:
+
+  conversations:index           -> ZSET member=conversation_id score=updated_at
+
 Branching (Stage 2a) keys — additive, same TTL discipline; a conversation that
 never forks (and every conversation created before these keys existed) behaves
 exactly as before because the tree keys are simply absent or form a single
@@ -78,6 +82,23 @@ def _k(conversation_id: str, suffix: str) -> str:
     return f"conversation:{conversation_id}:{suffix}"
 
 
+# The conversation index: a ZSET of conversation_id scored by updated_at, so
+# "recent investigations" is one ZREVRANGE. Same 24h TTL discipline as every
+# other key — every touch refreshes it, so the index self-cleans alongside the
+# conversations it points at. Members whose meta expired first are lazily
+# ZREM'd by list_conversations. Conversations created before the index existed
+# simply never appear (acceptable: this is a recents menu, not an archive).
+_INDEX_KEY = "conversations:index"
+
+# Per-conversation keys with a fixed suffix (the documented layout above).
+# Per-turn keys (turn_delta:{id} / turn_graph:{id}) are enumerated from the
+# turn_tree hash at delete time.
+_STATIC_SUFFIXES = (
+    "meta", "state", "lock", "events", "turns", "summaries", "answers",
+    "context", "graph", "state_doc", "turn_tree", "tree_base",
+)
+
+
 def new_conversation_id() -> str:
     return uuid.uuid4().hex
 
@@ -94,6 +115,8 @@ async def create_conversation(title: str = "New investigation") -> str:
             ["SET", _k(cid, "meta"), json.dumps(meta), "EX", str(_TTL_SECONDS)],
             ["SET", _k(cid, "state"), "idle", "EX", str(_TTL_SECONDS)],
             ["SET", _k(cid, "graph"), json.dumps({"nodes": [], "edges": []}), "EX", str(_TTL_SECONDS)],
+            ["ZADD", _INDEX_KEY, str(now), cid],
+            ["EXPIRE", _INDEX_KEY, str(_TTL_SECONDS)],
         ])
     return cid
 
@@ -139,6 +162,13 @@ async def acquire_lock(conversation_id: str) -> bool:
 async def release_lock(conversation_id: str) -> None:
     async with _client() as c:
         await c.post("/pipeline", json=[["DEL", _k(conversation_id, "lock")]])
+
+
+async def is_locked(conversation_id: str) -> bool:
+    async with _client() as c:
+        r = await c.get(f"/exists/{_k(conversation_id, 'lock')}")
+        r.raise_for_status()
+        return r.json().get("result") == 1
 
 
 # ---------- Turn scope (branching) ----------
@@ -1270,8 +1300,103 @@ async def bump_meta(conversation_id: str, title: str | None = None) -> dict[str,
     async with _client() as c:
         await c.post("/pipeline", json=[
             ["SET", _k(conversation_id, "meta"), json.dumps(meta, default=str), "EX", str(_TTL_SECONDS)],
+            # Keep the recents index in step: re-score by updated_at and refresh
+            # its TTL, the same write discipline as every other key.
+            ["ZADD", _INDEX_KEY, str(meta["updated_at"]), conversation_id],
+            ["EXPIRE", _INDEX_KEY, str(_TTL_SECONDS)],
         ])
     return meta
+
+
+# ---------- Conversation index (list / delete) ----------
+
+
+def assemble_conversation_list(
+    ids: list[str], raw: list[Any]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """PURE assembler for the conversation list: pair each index member with
+    its fetched (meta_raw, state) and split live items from dead ids.
+
+    `raw` is the flat pipeline result [meta_0, state_0, meta_1, state_1, ...]
+    in `ids` order. An id whose meta is missing (per-key 24h TTL expired before
+    the index entry) or unparseable is DEAD: it goes in the second list so the
+    caller can lazily ZREM it. Factored pure so the deterministic evals can pin
+    the filtering without Redis."""
+    items: list[dict[str, Any]] = []
+    dead: list[str] = []
+    for i, cid in enumerate(ids):
+        meta_raw = raw[2 * i] if 2 * i < len(raw) else None
+        state = raw[2 * i + 1] if 2 * i + 1 < len(raw) else None
+        if not meta_raw:
+            dead.append(cid)
+            continue
+        try:
+            meta = json.loads(meta_raw)
+        except (TypeError, json.JSONDecodeError):
+            dead.append(cid)
+            continue
+        if not isinstance(meta, dict):
+            dead.append(cid)
+            continue
+        items.append({
+            "conversation_id": cid,
+            "title": meta.get("title") or "New investigation",
+            "created_at": meta.get("created_at"),
+            "updated_at": meta.get("updated_at"),
+            "turn_count": int(meta.get("turn_count", 0)),
+            "state": state or "idle",
+        })
+    return items, dead
+
+
+async def list_conversations(limit: int = 50) -> list[dict[str, Any]]:
+    """Most-recently-updated conversations from the ZSET index, newest first.
+
+    One pipeline reads the index page, a second fetches every member's
+    meta + state; ids whose meta expired are filtered out AND lazily removed
+    from the index (the per-key TTL is the source of truth, the index is just
+    a pointer set)."""
+    async with _client() as c:
+        r = await c.post("/pipeline", json=[
+            ["ZREVRANGE", _INDEX_KEY, "0", str(max(limit - 1, 0))],
+        ])
+        r.raise_for_status()
+        first = r.json()
+        ids = (first[0].get("result") or []) if isinstance(first, list) and first else []
+        if not ids:
+            return []
+        cmds: list[list[str]] = []
+        for cid in ids:
+            cmds.append(["GET", _k(cid, "meta")])
+            cmds.append(["GET", _k(cid, "state")])
+        r2 = await c.post("/pipeline", json=cmds)
+        r2.raise_for_status()
+        raw = [row.get("result") for row in r2.json()]
+        items, dead = assemble_conversation_list(ids, raw)
+        if dead:
+            await c.post("/pipeline", json=[["ZREM", _INDEX_KEY, *dead]])
+    return items
+
+
+async def delete_conversation(conversation_id: str) -> None:
+    """Delete the conversation's whole key family and drop it from the index.
+
+    The per-turn keys (turn_delta:{id} / turn_graph:{id}) are enumerated via
+    the turn_tree hash BEFORE the hash itself is deleted. The caller (the API
+    layer) is responsible for refusing deletes while a turn is running."""
+    tree = await get_turn_tree(conversation_id)
+    keys = [_k(conversation_id, s) for s in _STATIC_SUFFIXES]
+    for tid in tree:
+        keys.append(_k(conversation_id, f"turn_delta:{tid}"))
+        keys.append(_k(conversation_id, f"turn_graph:{tid}"))
+    async with _client() as c:
+        await c.post("/pipeline", json=[
+            ["DEL", *keys],
+            ["ZREM", _INDEX_KEY, conversation_id],
+        ])
+    # Drop any cached path folds for this conversation (stale otherwise).
+    for key in [k for k in _PATH_FOLD_CACHE if k[0] == conversation_id]:
+        _PATH_FOLD_CACHE.pop(key, None)
 
 
 # ---------- Hydration (page reload) ----------

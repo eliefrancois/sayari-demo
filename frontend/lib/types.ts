@@ -266,6 +266,20 @@ export interface TurnGraphResponse {
   turn_delta: { nodes: GraphNode[]; edges: GraphEdge[] };
 }
 
+/**
+ * One row from GET /conversations — the recents index behind the history
+ * menu. `state` is the conversation's live state key ("idle" | "running" |
+ * "error"); rows whose meta expired server-side never appear.
+ */
+export interface ConversationListItem {
+  conversation_id: string;
+  title: string;
+  created_at: number | null;
+  updated_at: number | null;
+  turn_count: number;
+  state: string;
+}
+
 /** Payload from GET /conversations/{id} — used to restore on page reload. */
 export interface ConversationHydrate {
   conversation_id: string;

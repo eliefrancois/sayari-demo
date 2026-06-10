@@ -18,6 +18,7 @@ import type {
   ExpandKind,
   ExpandResponse,
   ConversationHydrate,
+  ConversationListItem,
   TreeTurn,
   TurnGraphResponse,
 } from "./types";
@@ -58,6 +59,35 @@ const EVENT_TYPES: EventType[] = [
   "error",
   "done",
 ];
+
+/**
+ * Recent conversations (newest-updated first) from the server-side index.
+ * Expired ones are filtered server-side; this is a recents menu, not an
+ * archive (24h TTL).
+ */
+export async function listConversations(limit = 50): Promise<ConversationListItem[]> {
+  const resp = await fetch(`${BACKEND_URL}/conversations?limit=${limit}`);
+  if (!resp.ok) {
+    throw new Error(`list conversations failed: ${resp.status} ${await resp.text()}`);
+  }
+  const { conversations } = (await resp.json()) as {
+    conversations: ConversationListItem[];
+  };
+  return conversations ?? [];
+}
+
+/**
+ * Delete a conversation (whole server-side key family + index entry).
+ * The server refuses with 409 while a turn is running.
+ */
+export async function deleteConversation(conversationId: string): Promise<void> {
+  const resp = await fetch(`${BACKEND_URL}/conversations/${conversationId}`, {
+    method: "DELETE",
+  });
+  if (!resp.ok) {
+    throw new Error(`delete conversation failed: ${resp.status} ${await resp.text()}`);
+  }
+}
 
 /** Create a new (empty) conversation. Returns its id. */
 export async function createConversation(): Promise<string> {

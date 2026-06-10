@@ -44,6 +44,19 @@ data flow):
   handles, hover-revealed circular `+` branch button, selection ring, and
   the draft-card textarea pattern (Enter submits, Esc cancels)
   (donor: `src/renderer/src/components/Canvas/CustomNode.tsx`)
+- `components/manager/ConversationManager.tsx` — history side-panel shell:
+  fixed left slide-over with spring motion, scrim dismissal, New button,
+  search + scrolling list layout
+  (donor: `src/renderer/src/components/CanvasManager/CanvasManager.tsx`)
+- `components/manager/ConversationItem.tsx` — list row pattern: active-row
+  highlight, hover-revealed `…` options button, click-outside menu dismissal
+  (donor: `src/renderer/src/components/CanvasManager/CanvasItem.tsx`)
+- `components/manager/ConversationSearch.tsx` — collapsed-label-to-inline-
+  input search toggle with imperative close ref
+  (donor: `src/renderer/src/components/CanvasManager/CanvasSearch.tsx`)
+- `components/manager/DeleteConversationModal.tsx` — delete-confirm modal:
+  scrim, focus-the-confirm-button pattern, Esc-to-close
+  (donor: `src/renderer/src/components/CanvasManager/DeleteCanvasModal.tsx`)
 
 MIT License
 

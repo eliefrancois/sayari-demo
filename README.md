@@ -8,6 +8,12 @@ A miniature of the Sayari Graph + Graph AI loop, built end-to-end as a portfolio
 
 **Status:** under active construction. Final README, demo URL, screenshots, and walkthrough land Thursday night.
 
+## Architecture
+
+[![Architecture diagram](https://app.eraser.io/workspace/Qu0DfqXeDMCK099eV3IS/preview?diagram=tq2JMz7dKrMozDSfMG59&type=embed)](https://app.eraser.io/workspace/Qu0DfqXeDMCK099eV3IS?diagram=tq2JMz7dKrMozDSfMG59)
+
+A request starts as an analyst prompt in the Next.js frontend, where a React Flow canvas and a prompt-kit chat UI render the investigation as it happens. The frontend calls a FastAPI backend on Cloud Run over HTTP, with progress streamed back as SSE events. Each prompt first passes through a Haiku 4.5 intent router that classifies the request and narrows the toolset before the main model sees it. The investigation itself runs on a Sonnet 4.5 LangGraph agent, looping over a tool layer that hits the Sayari Graph API, the ICIJ Offshore Leaks graph in Neo4j, and OpenSanctions. Conversation state and structured investigation memory live in Upstash Redis with a 24-hour TTL, and a flag-gated episodic memory layer in Upstash Vector can recall prior investigations. The agent ends every run by calling one of two terminator tools, `submit_answer` or `submit_summary`, whose structured payloads drive the answer cards and evidence graph in the UI. LangSmith captures traces and powers the eval suite. Deploys flow through Cloud Build into Artifact Registry and out to Cloud Run, with credentials supplied by Secret Manager.
+
 ## Stack
 
 - **Backend:** Python 3.11, FastAPI, Anthropic Claude Sonnet 4 (native tool-use API), `neo4j` driver, `httpx`, Pydantic
@@ -16,18 +22,6 @@ A miniature of the Sayari Graph + Graph AI loop, built end-to-end as a portfolio
 - **Sanctions:** OpenSanctions `/match/default` API
 - **Session state:** Upstash Redis
 - **Hosting:** Cloud Run (backend), Vercel (frontend), DigitalOcean droplet (Neo4j)
-
-## Architecture (placeholder — full diagram + walkthrough below)
-
-```
-Browser  ──POST /assess──▶  FastAPI  ──tool-use loop──▶  Neo4j (ICIJ graph)
-       ◀──SSE events────                ──HTTP─────────▶  OpenSanctions
-                                       ──KV──────────▶   Upstash Redis
-```
-
-Four layers in the backend, with a deliberate seam between agent and tools so the orchestrator
-is swappable (native Anthropic tool-use today → LangGraph in Phase 2) without touching tools,
-data, or the SSE contract.
 
 ## Local dev
 

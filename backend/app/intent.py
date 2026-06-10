@@ -27,6 +27,15 @@ from app.config import get_settings
 
 log = logging.getLogger("erre.intent")
 
+# The minimal corroboration set. The system prompt MANDATES a cross-source step
+# (Process step 4): check_sanctions for DIRECT watchlist listing, search_entity
+# for ICIJ leak provenance. These must be bindable on EVERY narrowed turn —
+# otherwise a confident classification strands the agent Sayari-only and it
+# literally cannot execute the corroboration its own prompt orders (it only
+# worked when confidence dipped below the floor and the full set was bound).
+# Unioned into every non-meta subset right after the table below.
+_CORROBORATION_TOOLS = ["check_sanctions", "search_entity"]
+
 # The bounded intent taxonomy. Each maps to the INVESTIGATION tools worth binding
 # for that turn (terminators are added separately and always available). The two
 # "meta" intents (conversational_followup, out_of_scope) bind the full toolset —
@@ -84,6 +93,12 @@ _INTENT_TOOLS: dict[str, list[str]] = {
     "out_of_scope": [],
 }
 
+# Union the corroboration set into every narrowed subset (meta intents keep the
+# empty subset, which already means the full toolset).
+for _tools in _INTENT_TOOLS.values():
+    if _tools:
+        _tools.extend(t for t in _CORROBORATION_TOOLS if t not in _tools)
+
 _INTENTS = list(_INTENT_TOOLS.keys())
 
 # Below this confidence we don't trust the label enough to narrow tools — fall
@@ -93,19 +108,25 @@ _CONFIDENCE_FLOOR = 0.55
 _GUIDANCE: dict[str, str] = {
     "identify_entity": (
         "Identity/resolution turn: sayari_resolve the subject, pick the right "
-        "candidate (score+identifiers+address), then sayari_profile it."
+        "candidate (score+identifiers+address), then sayari_profile it. Then "
+        "corroborate: check_sanctions for direct listing, search_entity for ICIJ "
+        "leak provenance."
     ),
     "profile_entity": (
         "Profile turn: resolve then sayari_profile the PRIMARY subject; use "
-        "sayari_summary for any secondary entity; corroborate with check_sanctions."
+        "sayari_summary for any secondary entity; corroborate with check_sanctions "
+        "(direct listing) and search_entity (ICIJ leak provenance)."
     ),
     "ownership_network": (
         "Ownership/network turn: after resolving + profiling, sayari_ownership "
-        "(ubo='who owns it', downstream='what it owns'); sayari_summary risky owners."
+        "(ubo='who owns it', downstream='what it owns'); sayari_summary risky owners. "
+        "Corroborate the subject: check_sanctions for direct listing, search_entity "
+        "for ICIJ leak provenance."
     ),
     "sanctions_screening": (
         "Sanctions/PEP exposure turn: check_sanctions for DIRECT listing and "
-        "sayari_watchlist for INDIRECT exposure up/down the chain. Keep OFAC "
+        "sayari_watchlist for INDIRECT exposure up/down the chain. Corroborate "
+        "leak provenance with search_entity (ICIJ). Keep OFAC "
         "list-type discipline (never blur SDN vs non-SDN). For a SUPERLATIVE/"
         "ranked ask ('most sanctioned connected entity'), rank across the FULL "
         "pool with recall_state(kind='entities', sort='severity'), state the "
@@ -121,7 +142,9 @@ _GUIDANCE: dict[str, str] = {
         "screen with provenance: our HS screen (BIS/E5 CHPL) vs Sayari's native "
         "BIS tags — never blur the two. For 'how is X connected to Y', resolve "
         "BOTH ids then sayari_shortest_path; if has_sanctioned_intermediary is "
-        "true, NAME the sanctioned intermediary explicitly."
+        "true, NAME the sanctioned intermediary explicitly. After profiling, "
+        "corroborate: check_sanctions for direct listing, search_entity for ICIJ "
+        "leak provenance."
     ),
     "broad_search": (
         "Broad/lead-gen turn: sayari_search to cast a wide net, then resolve+profile "

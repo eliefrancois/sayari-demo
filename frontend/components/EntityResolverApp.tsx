@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { RotateCcw, Undo2 } from "lucide-react";
+import { PanelLeft, RotateCcw, Undo2 } from "lucide-react";
 import { ExpandToast } from "./ExpandToast";
 import { GraphPanel } from "./GraphPanel";
 import { TradeRoutesMap } from "./TradeRoutesMap";
 import { InvestigationCanvas } from "./canvas/InvestigationCanvas";
+import { ConversationManager } from "./manager/ConversationManager";
 import {
   countExpandDelta,
   edgeKey,
@@ -69,6 +70,11 @@ export function EntityResolverApp() {
   const [hiddenLabels, setHiddenLabels] = useState<Set<NodeLabel>>(new Set());
   const [centerView, setCenterView] = useState<CenterView>("graph");
   const [scoped, setScoped] = useState<ScopedGraph | null>(null);
+  const [managerOpen, setManagerOpen] = useState(false);
+  // Bumped when the workspace is replaced wholesale (switch / new / delete) so
+  // the tree canvas remounts and lays out fresh, exactly like a page reload.
+  // Live turns and the mount-time resume hydrate keep the same canvas instance.
+  const [canvasEpoch, setCanvasEpoch] = useState(0);
   const scopeTickRef = useRef(0);
 
   // Resume the last conversation on reload: hydrate restores turns + the
@@ -184,8 +190,55 @@ export function EntityResolverApp() {
     setCenterView("graph");
     setScoped(null);
     localStorage.removeItem(CONVERSATION_KEY);
+    setCanvasEpoch((n) => n + 1);
     dispatch({ type: "reset" });
   }, []);
+
+  /* ── conversation history menu: switch / new / delete ── */
+
+  const isRunning = state.status === "running";
+
+  // Switching reuses the EXACT page-reload restore path (fetchConversation ->
+  // hydrate), so turns, the tree canvas, the merged graph and the map data all
+  // come back identically. Blocked while a turn is streaming — the manager
+  // disables its rows, and this guard backs that up.
+  const switchConversation = useCallback(
+    (cid: string) => {
+      if (isRunning) return;
+      setManagerOpen(false);
+      if (cid === state.conversationId) return;
+      handleRef.current?.close();
+      handleRef.current = null;
+      fetchConversation(cid)
+        .then((payload) => {
+          localStorage.setItem(CONVERSATION_KEY, cid);
+          setCenterView("graph");
+          setScoped(null);
+          setCanvasEpoch((n) => n + 1);
+          dispatch({ type: "hydrate", payload });
+        })
+        .catch((err) => {
+          // Expired (24h TTL) or unreachable — leave the current state alone.
+          console.error("switch conversation failed", err);
+        });
+    },
+    [isRunning, state.conversationId]
+  );
+
+  const newInvestigation = useCallback(() => {
+    // Reset the workspace and clear the active pointer. The old conversation
+    // stays on the server (and in the history menu) until its TTL expires.
+    setManagerOpen(false);
+    resetAll();
+  }, [resetAll]);
+
+  const onConversationDeleted = useCallback(
+    (cid: string) => {
+      // Deleting the conversation we're standing in resets the workspace.
+      if (cid === state.conversationId) resetAll();
+    },
+    [state.conversationId, resetAll]
+  );
 
   /* ── time-travel: selected card -> path-scoped evidence graph (spec §6) ── */
 
@@ -270,8 +323,6 @@ export function EntityResolverApp() {
     dispatch({ type: "toggle_leads_overlay" });
   }, []);
 
-  const isRunning = state.status === "running";
-
   // Live mode renders the merged conversation graph; time travel swaps in the
   // selected turn's path-accumulated graph (sibling branches excluded).
   const liveNodes = useMemo(() => Array.from(state.nodes.values()), [state.nodes]);
@@ -284,12 +335,28 @@ export function EntityResolverApp() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      <AppHeader state={state} onReset={resetAll} />
+      <AppHeader
+        state={state}
+        onReset={newInvestigation}
+        onToggleHistory={() => setManagerOpen((o) => !o)}
+        historyOpen={managerOpen}
+      />
+
+      <ConversationManager
+        open={managerOpen}
+        onClose={() => setManagerOpen(false)}
+        activeConversationId={state.conversationId}
+        isRunning={isRunning}
+        onSelect={switchConversation}
+        onNewInvestigation={newInvestigation}
+        onDeleted={onConversationDeleted}
+      />
 
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(420px,40%)_1fr]">
         {/* Left: INVESTIGATION — the branching turn canvas */}
         <aside className="flex min-h-0 flex-col border-r border-border">
           <InvestigationCanvas
+            key={canvasEpoch}
             state={state}
             disabled={isRunning}
             onSendFrom={onSendFrom}
@@ -358,18 +425,29 @@ export function EntityResolverApp() {
   );
 }
 
-/** Thin top header: product name, data-route chip (pixel accent), reset. */
+/** Thin top header: history toggle, product name, data-route chip, reset. */
 function AppHeader({
   state,
   onReset,
+  onToggleHistory,
+  historyOpen,
 }: {
   state: ConversationState;
   onReset: () => void;
+  onToggleHistory: () => void;
+  historyOpen: boolean;
 }) {
   const hasData = state.turns.length > 0 || state.nodes.size > 0;
   return (
     <header className="flex shrink-0 items-center justify-between border-b border-border bg-background px-4 py-2">
       <div className="flex items-center gap-3">
+        <button
+          onClick={onToggleHistory}
+          title={historyOpen ? "Close investigation history" : "Open investigation history"}
+          className="flex cursor-pointer items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <PanelLeft className="h-4 w-4" />
+        </button>
         <h1 className="text-[13px] font-semibold tracking-tight text-foreground">
           Entity Risk Resolver
         </h1>

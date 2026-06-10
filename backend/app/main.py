@@ -49,7 +49,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins_list,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -188,10 +188,52 @@ class MessageResponse(BaseModel):
     parent_turn_id: str | None = None
 
 
+class ConversationListItem(BaseModel):
+    conversation_id: str
+    title: str
+    created_at: int | None = None
+    updated_at: int | None = None
+    turn_count: int = 0
+    state: str = "idle"
+
+
+class ConversationListResponse(BaseModel):
+    conversations: list[ConversationListItem]
+
+
 @app.post("/conversations", response_model=CreateConversationResponse)
 async def create_conversation() -> CreateConversationResponse:
     cid = await conversations.create_conversation()
     return CreateConversationResponse(conversation_id=cid)
+
+
+@app.get("/conversations", response_model=ConversationListResponse)
+async def list_conversations(limit: int = 50) -> ConversationListResponse:
+    """Recent conversations, newest-updated first, from the ZSET index.
+
+    Ids whose meta already expired (24h per-key TTL) are filtered out and
+    lazily removed from the index. Conversations created before the index
+    existed don't appear — this is a recents menu, not an archive."""
+    limit = max(1, min(limit, 100))
+    items = await conversations.list_conversations(limit)
+    return ConversationListResponse(
+        conversations=[ConversationListItem(**it) for it in items]
+    )
+
+
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str) -> dict:
+    """Delete a conversation's whole key family + its index entry.
+
+    Refused (409) while a turn is running — deleting keys mid-turn would have
+    the background task resurrect some of them on its next write."""
+    if not await conversations.exists(conversation_id):
+        raise HTTPException(status_code=404, detail="unknown conversation_id")
+    state = await conversations.get_state(conversation_id)
+    if state == "running" or await conversations.is_locked(conversation_id):
+        raise HTTPException(status_code=409, detail="a turn is currently running")
+    await conversations.delete_conversation(conversation_id)
+    return {"deleted": conversation_id}
 
 
 @app.get("/conversations/{conversation_id}")
