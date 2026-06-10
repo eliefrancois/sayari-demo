@@ -1,43 +1,66 @@
 "use client";
 
-import { useCallback, useMemo, useReducer, useRef, useState } from "react";
-import { RotateCcw } from "lucide-react";
-import { ChatPanel } from "./ChatPanel";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { RotateCcw, Undo2 } from "lucide-react";
 import { ExpandToast } from "./ExpandToast";
 import { GraphPanel } from "./GraphPanel";
 import { TradeRoutesMap } from "./TradeRoutesMap";
+import { InvestigationCanvas } from "./canvas/InvestigationCanvas";
 import {
   countExpandDelta,
+  edgeKey,
   initialState,
+  liveHeadTurn,
+  pathToRoot,
   reduce,
+  turnById,
   type ConversationState,
 } from "@/lib/conversation-store";
 import {
   createConversation,
   expandNode,
+  fetchConversation,
+  fetchTurnGraph,
   sendMessage as sendMessageApi,
   streamTurn,
   type TurnHandle,
 } from "@/lib/sse-client";
 import { collectTradeRoutes, collectTradeSubjects } from "@/lib/map/trade-routes";
-import type { ExpandKind, NodeLabel } from "@/lib/types";
+import type { ExpandKind, GraphEdge, GraphNode, NodeLabel } from "@/lib/types";
 
 /** Which lens the evidence pane shows: the React Flow graph or the routes map. */
 type CenterView = "graph" | "map";
 
+/** localStorage key for resuming the conversation across reloads. */
+const CONVERSATION_KEY = "err:conversation_id";
+
+/**
+ * The evidence graph regenerated to a selected turn's path-accumulated state
+ * (GET /turns/{id}/graph). `deltaNodeIds`/`deltaEdgeKeys` mark the turn's own
+ * contribution (pulse-in); the rest of the graph is inherited (dimmed).
+ */
+type ScopedGraph = {
+  turnId: string;
+  turnIndex: number;
+  pathLength: number;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  deltaNodeIds: Set<string>;
+  deltaEdgeKeys: Set<string>;
+  tick: number;
+};
+
 /**
  * Top-level client component. Owns:
- *  - Conversation state (useReducer over the multi-turn store).
+ *  - Conversation state (useReducer over the multi-turn tree store).
  *  - The active turn's SSE handle (closed on new turn / reset / unmount).
+ *  - The time-travel scope (selected turn -> path-scoped evidence graph).
  *
  * Conversation flow: first message lazily creates a conversation, then every
- * message POSTs to /messages and opens a fresh SSE stream at the returned
- * cursor. The graph accumulates across turns.
- *
- * Layout (lmcanvas reskin, spec §3): thin top header, then a split pane —
- * INVESTIGATION (~40%, the conversation cards) | EVIDENCE GRAPH (~60%, the
- * React Flow graph with the Graph|Map lens). Tool calls render inline in the
- * conversation cards, so the old Tool Feed panel is gone.
+ * message POSTs to /messages (optionally with a parent_turn_id when forking)
+ * and opens a fresh SSE stream at the returned cursor. The MERGED graph
+ * accumulates across all branches; selecting a non-head card swaps the right
+ * pane to that turn's path-scoped graph (sibling evidence never appears).
  */
 export function EntityResolverApp() {
   const [state, dispatch] = useReducer(reduce, undefined, initialState);
@@ -45,6 +68,31 @@ export function EntityResolverApp() {
   const [expandToast, setExpandToast] = useState<string | null>(null);
   const [hiddenLabels, setHiddenLabels] = useState<Set<NodeLabel>>(new Set());
   const [centerView, setCenterView] = useState<CenterView>("graph");
+  const [scoped, setScoped] = useState<ScopedGraph | null>(null);
+  const scopeTickRef = useRef(0);
+
+  // Resume the last conversation on reload: hydrate restores turns + the
+  // merged graph, and the tree (stage 2a) restores branch structure. Old
+  // pre-branching conversations come back as the flat vertical chain.
+  useEffect(() => {
+    const cid =
+      typeof window !== "undefined" ? localStorage.getItem(CONVERSATION_KEY) : null;
+    if (!cid) return;
+    let cancelled = false;
+    fetchConversation(cid)
+      .then((payload) => {
+        if (cancelled) return;
+        if ((payload.turns ?? []).length === 0) return; // nothing to restore
+        dispatch({ type: "hydrate", payload });
+      })
+      .catch(() => {
+        // Expired (24h TTL) or unreachable — forget it.
+        localStorage.removeItem(CONVERSATION_KEY);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Trade routes for the map lens, derived from sayari_trade results already
   // in the conversation (tool-result metadata, with a graph-edge fallback).
@@ -66,11 +114,14 @@ export function EntityResolverApp() {
     });
   }, []);
 
-  // The single send path for every turn. `forceRiskReport` makes the agent
-  // produce a full RiskSummary even on a follow-up (used by the "Generate
-  // report" button surfaced on an answer).
+  // The single send path for every turn. `parentTurnId` forks/extends from
+  // that turn (stage 2a tree); null keeps today's linear append.
   const send = useCallback(
-    async (text: string, opts?: { forceRiskReport?: boolean }) => {
+    async (
+      parentTurnId: string | null,
+      text: string,
+      opts?: { forceRiskReport?: boolean }
+    ) => {
       handleRef.current?.close();
       handleRef.current = null;
 
@@ -78,19 +129,26 @@ export function EntityResolverApp() {
         let cid = state.conversationId;
         if (!cid) {
           cid = await createConversation();
+          localStorage.setItem(CONVERSATION_KEY, cid);
           dispatch({ type: "conversation_created", conversationId: cid });
         }
 
         const pinned = Array.from(state.pinnedNodeIds);
         const forceRiskReport = opts?.forceRiskReport ?? false;
-        const { turnIndex, eventCursor } = await sendMessageApi(cid, text, {
-          pinnedNodeIds: pinned,
-          forceRiskReport,
-        });
+        const { turnIndex, eventCursor, turnId, parentTurnId: resolvedParent } =
+          await sendMessageApi(cid, text, {
+            pinnedNodeIds: pinned,
+            forceRiskReport,
+            parentTurnId,
+          });
 
         dispatch({
           type: "turn_sent",
           turnIndex,
+          turnId,
+          // The server resolves the actual parent (the current head when we
+          // omitted one) — store its answer, not our request.
+          parentTurnId: resolvedParent,
           userMessage: text,
           pinnedNodeIds: pinned,
           forceRiskReport,
@@ -110,18 +168,70 @@ export function EntityResolverApp() {
     [state.conversationId, state.pinnedNodeIds]
   );
 
-  const onSend = useCallback((text: string) => send(text), [send]);
-  const onGenerateReport = useCallback(
-    (prompt: string) => send(prompt, { forceRiskReport: true }),
+  const onSendFrom = useCallback(
+    (parentTurnId: string | null, text: string, opts?: { forceRiskReport?: boolean }) =>
+      send(parentTurnId, text, opts),
     [send]
   );
+
+  const selectTurn = useCallback((turnId: string | null) => {
+    dispatch({ type: "select_turn", turnId });
+  }, []);
 
   const resetAll = useCallback(() => {
     handleRef.current?.close();
     handleRef.current = null;
     setCenterView("graph");
+    setScoped(null);
+    localStorage.removeItem(CONVERSATION_KEY);
     dispatch({ type: "reset" });
   }, []);
+
+  /* ── time-travel: selected card -> path-scoped evidence graph (spec §6) ── */
+
+  const liveHead = liveHeadTurn(state);
+  const liveHeadId = liveHead?.turnId ?? null;
+  // Time travel only when an explicit selection points away from the live
+  // head. Selecting the head (or nothing) = live mode: merged graph + streaming.
+  const timeTravelTurnId =
+    state.activeTurnId && state.activeTurnId !== liveHeadId
+      ? state.activeTurnId
+      : null;
+
+  useEffect(() => {
+    if (!timeTravelTurnId || !state.conversationId) {
+      setScoped(null);
+      return;
+    }
+    const cid = state.conversationId;
+    const turn = turnById(state, timeTravelTurnId);
+    const pathLength = pathToRoot(state, timeTravelTurnId).length;
+    let cancelled = false;
+    fetchTurnGraph(cid, timeTravelTurnId)
+      .then((resp) => {
+        if (cancelled) return;
+        setScoped({
+          turnId: resp.turn_id,
+          turnIndex: turn?.index ?? 0,
+          pathLength: resp.path?.length ?? pathLength,
+          nodes: resp.graph?.nodes ?? [],
+          edges: resp.graph?.edges ?? [],
+          deltaNodeIds: new Set((resp.turn_delta?.nodes ?? []).map((n) => n.id)),
+          deltaEdgeKeys: new Set((resp.turn_delta?.edges ?? []).map(edgeKey)),
+          tick: ++scopeTickRef.current,
+        });
+      })
+      .catch((err) => {
+        console.error("time-travel graph fetch failed", err);
+        if (!cancelled) setScoped(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // `state` is intentionally not a dep — the scope refetches only when the
+    // selected turn changes, not on every streaming tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeTravelTurnId, state.conversationId]);
 
   const handleExpand = useCallback(
     async (nodeId: string, kind: ExpandKind) => {
@@ -161,21 +271,29 @@ export function EntityResolverApp() {
   }, []);
 
   const isRunning = state.status === "running";
-  const nodes = Array.from(state.nodes.values());
-  const edges = Array.from(state.edges.values());
+
+  // Live mode renders the merged conversation graph; time travel swaps in the
+  // selected turn's path-accumulated graph (sibling branches excluded).
+  const liveNodes = useMemo(() => Array.from(state.nodes.values()), [state.nodes]);
+  const liveEdges = useMemo(() => Array.from(state.edges.values()), [state.edges]);
+  const graphNodes = scoped ? scoped.nodes : liveNodes;
+  const graphEdges = scoped ? scoped.edges : liveEdges;
+  const scopedDelta = scoped
+    ? { nodeIds: scoped.deltaNodeIds, edgeKeys: scoped.deltaEdgeKeys, tick: scoped.tick }
+    : null;
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
       <AppHeader state={state} onReset={resetAll} />
 
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(420px,40%)_1fr]">
-        {/* Left: INVESTIGATION — the conversation cards */}
+        {/* Left: INVESTIGATION — the branching turn canvas */}
         <aside className="flex min-h-0 flex-col border-r border-border">
-          <ChatPanel
+          <InvestigationCanvas
             state={state}
-            onSend={onSend}
-            onGenerateReport={onGenerateReport}
             disabled={isRunning}
+            onSendFrom={onSendFrom}
+            onSelectTurn={selectTurn}
             onHighlightNodes={highlightNodes}
             onClearHighlight={clearHighlight}
             onFocusNode={focusNode}
@@ -186,34 +304,50 @@ export function EntityResolverApp() {
         {/* Right: EVIDENCE GRAPH — graph with a map lens for trade routes */}
         <main className="relative flex min-h-0 flex-col">
           <EvidencePaneHeader
-            state={state}
+            nodeCount={graphNodes.length}
+            edgeCount={graphEdges.length}
             hiddenLabels={hiddenLabels}
             onToggleLabel={toggleLabel}
             view={centerView}
             onViewChange={setCenterView}
             routeCount={tradeRoutes.length}
+            scopeLabel={
+              scoped
+                ? `as of turn ${String(scoped.turnIndex + 1).padStart(2, "0")} on this path`
+                : null
+            }
+            onBackToLive={scoped ? () => selectTurn(null) : undefined}
           />
           <div className="relative min-h-0 flex-1">
             {/* GraphPanel stays mounted under the map so the force layout and
                 user-dragged positions survive flipping lenses. */}
             <GraphPanel
-              nodes={nodes}
-              edges={edges}
+              nodes={graphNodes}
+              edges={graphEdges}
               highlightedNodeIds={state.highlightedNodeIds}
               pinnedNodeIds={state.pinnedNodeIds}
               focusRequest={state.focusRequest}
               hiddenLabels={hiddenLabels}
               onExpandNode={handleExpand}
               onTogglePin={togglePin}
-              leadsShown={state.latestSearchMeta?.shown}
-              leadsTotal={state.latestSearchMeta?.total}
-              overlayLeadNodes={state.unpinnedLeadNodes}
-              showOverlayLeads={state.showUnpinnedLeads}
+              leadsShown={scoped ? undefined : state.latestSearchMeta?.shown}
+              leadsTotal={scoped ? undefined : state.latestSearchMeta?.total}
+              overlayLeadNodes={scoped ? [] : state.unpinnedLeadNodes}
+              showOverlayLeads={scoped ? false : state.showUnpinnedLeads}
               onToggleLeads={toggleLeadsOverlay}
+              scopedDelta={scopedDelta}
             />
             {centerView === "map" && (
               <div className="absolute inset-0 z-10">
                 <TradeRoutesMap routes={tradeRoutes} subjects={tradeSubjects} />
+                {/* Path-scoping the map isn't cheap (routes derive from
+                    per-turn tool metadata) — the map stays on live-head data
+                    and says so while time-traveling. */}
+                {scoped && (
+                  <div className="pointer-events-none absolute left-3 top-3 z-20 rounded-md border border-border bg-card px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground shadow-sm">
+                    map shows live data (not path-scoped)
+                  </div>
+                )}
               </div>
             )}
             <ExpandToast message={expandToast} onDismiss={() => setExpandToast(null)} />
@@ -264,33 +398,56 @@ const LABEL_TOGGLES: NodeLabel[] = [
   "Other",
 ];
 
-/** EVIDENCE GRAPH pane header: label, node-type filters, Graph|Map lens. */
+/** EVIDENCE GRAPH pane header: label, scope state, node-type filters, lens. */
 function EvidencePaneHeader({
-  state,
+  nodeCount,
+  edgeCount,
   hiddenLabels,
   onToggleLabel,
   view,
   onViewChange,
   routeCount,
+  scopeLabel,
+  onBackToLive,
 }: {
-  state: ConversationState;
+  nodeCount: number;
+  edgeCount: number;
   hiddenLabels: Set<NodeLabel>;
   onToggleLabel: (label: NodeLabel) => void;
   view: CenterView;
   onViewChange: (view: CenterView) => void;
   routeCount: number;
+  /** Non-null while time-traveling, e.g. "as of turn 02 on this path". */
+  scopeLabel?: string | null;
+  onBackToLive?: () => void;
 }) {
-  const n = state.nodes.size;
-  const e = state.edges.size;
   return (
     <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2">
       <div className="flex min-w-0 items-center gap-3">
         <h2 className="shrink-0 font-mono text-[9px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
           Evidence graph
         </h2>
-        <span className="shrink-0 font-mono text-[9px] tabular-nums uppercase tracking-[0.14em] text-muted-foreground/70">
-          {n} nodes · {e} edges
-        </span>
+        {scopeLabel ? (
+          <span className="flex shrink-0 items-center gap-2">
+            <span className="rounded-md border border-foreground/30 bg-muted px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.14em] text-foreground">
+              {scopeLabel}
+            </span>
+            {onBackToLive && (
+              <button
+                type="button"
+                onClick={onBackToLive}
+                title="Return to the live merged graph"
+                className="flex cursor-pointer items-center gap-1 rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <Undo2 className="h-2.5 w-2.5" /> back to live
+              </button>
+            )}
+          </span>
+        ) : (
+          <span className="shrink-0 font-mono text-[9px] tabular-nums uppercase tracking-[0.14em] text-muted-foreground/70">
+            {nodeCount} nodes · {edgeCount} edges
+          </span>
+        )}
         <div className="hidden items-center gap-1 border-l border-border pl-3 lg:flex">
           {LABEL_TOGGLES.map((label) => {
             const hidden = hiddenLabels.has(label);

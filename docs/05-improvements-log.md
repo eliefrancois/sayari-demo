@@ -8,6 +8,42 @@ Newest first. Each entry tries to cover three things: what I changed, why the ol
 
 ---
 
+## 2026-06-10: Stage 2b, the branching investigation canvas
+
+Stage 2a built the tree; this builds the room you walk around it in. The linear INVESTIGATION pane is now a React Flow canvas where every turn is a draggable card, forks hang off any card, and clicking a card time-travels the evidence graph to that turn's path-accumulated state. This is the Tier 3 signature move: the conversation is a tree, the graph is a fold along whatever path you're standing on, and the UI finally shows both.
+
+The store had to learn tree-thinking first. Turns now carry the server's `turn_id` and `parent_turn_id`, captured from the submit response for live turns and from `GET /tree` on reload. Everything else routes through that: SSE events find their card by `turn_id` (falling back to `turn_index` only for pre-branching conversations), the active path is derived by walking parent pointers from the selected card to the root, and the composer parents new messages on the selected card's id. No selection means a null parent, which the backend treats as linear append, so the old behavior is literally the default case of the new one.
+
+Layout is lifted from local-lmcanvas and adapted to a server-backed tree. The heuristic: a parent's first child lands directly below it (the thread continues), any later child lands in a right lane (a fork). When a new card overlaps existing ones, a push-right collision cascade shoves them aside, rightward only, because a cascade that can push both ways ping-pongs forever. Heights are measured from the live DOM corrected for zoom, because cards grow as content streams and a layout that guesses heights stacks cards into each other. That exact bug appeared on reload, where the whole tree is placed before any card has rendered: the fix is a second layout pass after mount, with real heights, before the camera fits the tree.
+
+The fork interaction is deliberately analyst-only. Hover a card, a circular plus button fades in, clicking it drops a dashed draft card in the spot its turn will occupy. Enter submits with that card's turn as parent; Esc throws it away. The agent never creates branches, it only suggests follow-ups, and a suggestion chip click forks from the card the chip lives on, not from the bottom of the conversation. Cards also infer a thread-type corner badge (Ownership, Sanctions, Trade, Identity) from the question and the tools the turn actually called, so a glance at the tree tells you which hypothesis each branch is chasing.
+
+Time-travel is the payoff. Selecting any non-head card fetches `GET /turns/{id}/graph` and swaps the evidence graph to that turn's accumulated state: inherited nodes dim, the turn's own delta pulses in, and sibling evidence simply is not in the payload, so isolation is structural rather than cosmetic. The graph header pins an "as of turn N on this path" pill with a back-to-live button, and clicking empty canvas or the live head restores the streaming graph. The map stays on live-head data with a small note while scoped, because path-scoping shipment lanes would mean re-deriving routes per turn and the cheap version (graph deltas) does not carry them.
+
+Verified live against prod: investigated Sergey Roldugin, deposited a case id (CASE-777) on the linear branch, forked from turn 1 and asked the fork whether a case id exists. The fork answered "no internal case ID is on file" while still knowing turn 1's Panama Papers entities, which is sibling isolation and path inheritance demonstrated in one answer. Streaming landed on the right card mid-fork, reload rebuilt the four-card tree from `/tree`, and `tsc --noEmit` plus `next build` pass clean.
+
+Status: done. Deferred polish: phrase-level highlight-to-fork, path-scoped map lanes, a minimap or fit-view button for big trees.
+
+Files: `frontend/lib/conversation-store.ts`, `lib/types.ts`, `lib/sse-client.ts`, `lib/canvas-layout.ts` (new), `components/canvas/InvestigationCanvas.tsx` (new, replaces `ChatPanel.tsx`), `components/canvas/TurnNode.tsx` (new), `components/canvas/TurnCard.tsx`, `components/GraphPanel.tsx`, `components/EntityResolverApp.tsx`, `app/globals.css`, `NOTICES.md`.
+
+## 2026-06-09: Stage 2a, the branching backend
+
+The Tier 3 spec promises branch cards that fork from any turn, sibling branches that can't see each other, and a time-travel graph that rebuilds to any turn's accumulated state. This entry is the backend half of that promise. The frontend canvas comes later; what exists now is the tree model, the isolation machinery, and the API the canvas will consume.
+
+The core idea: a conversation is now a tree of turns, and every turn's view of the world is a fold along its own path. Each turn gets a stable `turn_id` and a `parent_turn_id` (defaulting to the previous turn, which is why linear conversations behave byte-identically to before). When a turn writes state, the exact delta that `_build_state_delta` produced gets stored under that turn's id, alongside the merged doc that linear consumers still read. When a new turn starts on a branch, its state_doc is rebuilt by folding `_apply_delta` over the deltas from root to parent. Phase F's refactor, which pulled `_apply_delta` out of `merge_state_doc` as a pure function, is the whole reason this was a composition job instead of a rewrite. The fold IS the feature.
+
+The delivery mechanism is a `ContextVar` turn scope. The turn runner wraps execution in `turn_scope(conversation_id, turn_id, parent_turn_id)`, and inside that scope `get_state_doc` transparently returns the path-scoped doc. Nothing downstream changed: recall_state, the injected context core, the sanctions ledger, the registry, and claims all read through `get_state_doc`, so scoping the doc scoped them all for free. I verified there's no exception; every state subsystem lives inside state_doc. Prose context follows the same rule via `resolve_prior_context`, which hands a fork its parent's `context_after` rather than whatever a sibling said later. Graph deltas got the same treatment: each turn's added nodes and edges are stored per turn, and a path graph endpoint unions them root to turn for the frontend's time travel, with the turn's own delta returned separately so the UI can pulse what's new and dim what's inherited.
+
+One subtle bug worth recording: my first version of the write path appended the turn's delta to storage before reading the current doc. Inside a turn scope the read is path-scoped, so it picked up the just-appended delta and then applied it again, doubling every write. The fix is ordering: read first, apply, then record. The deterministic eval that compares the folded doc byte-for-byte against the old iterative merge is what caught it.
+
+Old conversations needed an answer too. They have no per-turn deltas, so the first tree-aware turn snapshots the merged state, graph, and context into a `tree_base` key, and path folds start from that snapshot. No migration, additive keys only, same 24h TTL. Old conversations keep working linearly and can still fork from the present.
+
+Verification: three new deterministic eval families in `evals/branching.py`. Fork isolation (a sanctions hit deposited on branch A is present in A's recall and absent from B's), path graph accumulation (graph at a turn equals its path's union only), and linear regression (a no-fork conversation produces an identical state_doc to the pre-change behavior). All 59 deterministic checks green. Full suite 99/102, where the three misses are live model-phrasing flakes (two are the documented known flakes, and the third, name_match_hedged, passed on an isolated rerun), so no regressions. Plus a live smoke test where a fork from turn 1 didn't know a name deposited on the sibling branch while the linear continuation did.
+
+Status: done. API contract and design notes in `docs/11-branching-backend.md`.
+
+Files: `backend/app/conversations.py`, `agent_graph.py`, `agent.py`, `main.py`, `episodic.py`, `backend/evals/branching.py`, `run_evals.py`.
+
 ## 2026-06-09: Two post-test fixes, the map didn't say whose trade it shows and sanctioned enumerations under-counted
 
 Both of these came out of live user testing right after the Tier 2 commit. Neither is a bug in the strict sense. The map rendered correct lanes and the recall read returned exact rows. They are both legibility failures: correct data presented without enough context to be trusted.

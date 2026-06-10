@@ -15,6 +15,24 @@ resume an investigation across turns and page reloads:
   conversation:{id}:graph       -> JSON {nodes, edges} accumulated across turns
   conversation:{id}:state_doc   -> JSON structured investigation state (exact recall)
 
+Branching (Stage 2a) keys — additive, same TTL discipline; a conversation that
+never forks (and every conversation created before these keys existed) behaves
+exactly as before because the tree keys are simply absent or form a single
+chain whose folded state is byte-identical to the merged doc:
+
+  conversation:{id}:turn_tree            -> HASH turn_id -> JSON tree entry
+                                            {turn_id, parent_turn_id, turn_index,
+                                             user_message, status, kind,
+                                             context_after, ...terminator meta}
+  conversation:{id}:turn_delta:{turn_id} -> LIST of JSON state_doc deltas this
+                                            turn produced (mid-turn named_ids
+                                            merges + the finalize projection)
+  conversation:{id}:turn_graph:{turn_id} -> JSON {nodes, edges} the turn added
+  conversation:{id}:tree_base            -> JSON {state_doc, graph, context}
+                                            snapshot taken when the first
+                                            tree-aware turn lands on a
+                                            conversation with pre-tree turns
+
 Design notes:
   - Append-only lists use RPUSH; wholesale-replaced values use SET.
   - Every write refreshes the 24h TTL so an active conversation never expires
@@ -29,11 +47,13 @@ Design notes:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
 import uuid
-from typing import Any
+from contextvars import ContextVar
+from typing import Any, Iterator
 
 import httpx
 
@@ -121,10 +141,52 @@ async def release_lock(conversation_id: str) -> None:
         await c.post("/pipeline", json=[["DEL", _k(conversation_id, "lock")]])
 
 
+# ---------- Turn scope (branching) ----------
+# The agent loop runs each turn inside `turn_scope(cid, turn_id, parent_turn_id)`.
+# While the scope is active, every state read in this task tree (`get_state_doc`,
+# and through it recall_state / the context assembly / the entity lookups) sees
+# the PATH-SCOPED state document — the fold of `_apply_delta` over the deltas
+# along root -> parent -> this turn — never sibling-branch deltas. Every
+# `merge_state_doc` write is additionally recorded as a per-turn delta, and every
+# SSE event is stamped with the turn ids so the frontend can build the tree live.
+# A ContextVar (not a global) so concurrent turns of DIFFERENT conversations on
+# one instance can't bleed into each other; it propagates into asyncio tasks and
+# to_thread calls automatically. When no scope is active (legacy native loop,
+# old conversations, hydrate), every read/write behaves exactly as before.
+
+_TURN_SCOPE: ContextVar[tuple[str, str, str | None] | None] = ContextVar(
+    "erre_turn_scope", default=None
+)
+
+
+@contextlib.contextmanager
+def turn_scope(
+    conversation_id: str, turn_id: str, parent_turn_id: str | None
+) -> Iterator[None]:
+    token = _TURN_SCOPE.set((conversation_id, turn_id, parent_turn_id))
+    try:
+        yield
+    finally:
+        _TURN_SCOPE.reset(token)
+
+
+def _active_scope(conversation_id: str) -> tuple[str, str | None] | None:
+    """(turn_id, parent_turn_id) when a scope is active for THIS conversation."""
+    scope = _TURN_SCOPE.get()
+    if scope and scope[0] == conversation_id:
+        return scope[1], scope[2]
+    return None
+
+
 # ---------- Events (SSE) ----------
 
 
 async def append_event(conversation_id: str, event: dict[str, Any]) -> None:
+    # Stamp the active turn's tree coordinates onto every event so the frontend
+    # can attach streaming events to the right branch card without a lookup.
+    scope = _active_scope(conversation_id)
+    if scope is not None and isinstance(event.get("data"), dict):
+        event = {**event, "data": {**event["data"], "turn_id": scope[0], "parent_turn_id": scope[1]}}
     payload = json.dumps(event, default=str)
     key = _k(conversation_id, "events")
     async with _client() as c:
@@ -587,7 +649,19 @@ def _project_entities(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 async def get_state_doc(conversation_id: str) -> dict[str, Any]:
-    """Read the structured investigation state, or the empty default shape."""
+    """Read the structured investigation state, or the empty default shape.
+
+    Branching: when the calling task is inside `turn_scope` AND the scoped turn
+    is registered in the turn tree, this returns the PATH-SCOPED doc instead —
+    the fold of `_apply_delta` over the deltas along root -> this turn. Sibling
+    branches are invisible by construction. Outside a scope (legacy native loop,
+    hydrate, old conversations without tree keys) the merged doc is returned
+    unchanged, which is also byte-identical to the fold for linear chains."""
+    scope = _active_scope(conversation_id)
+    if scope is not None:
+        path_doc = await _path_state_doc_for_scope(conversation_id, scope[0])
+        if path_doc is not None:
+            return path_doc
     async with _client() as c:
         r = await c.get(f"/get/{_k(conversation_id, 'state_doc')}")
         r.raise_for_status()
@@ -730,9 +804,20 @@ def _apply_delta(doc: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
 async def merge_state_doc(conversation_id: str, delta: dict[str, Any]) -> dict[str, Any]:
     """Read-modify-write the structured state with a turn's delta. Reads the
     current doc, applies the delta via the pure `_apply_delta`, writes it back,
-    and refreshes the 24h TTL."""
+    and refreshes the 24h TTL.
+
+    Branching: inside `turn_scope`, the read above is already path-scoped, so
+    the written doc is the ACTIVE PATH's doc (for a linear conversation that is
+    identical to today's merged doc). The raw delta is ALSO appended to this
+    turn's per-turn delta list, which is what makes the path fold reconstructable
+    for every branch later."""
+    # Read BEFORE recording the delta, so the path fold backing the read does
+    # not already contain it (that would apply the delta twice).
     doc = await get_state_doc(conversation_id)
     doc = _apply_delta(doc, delta)
+    scope = _active_scope(conversation_id)
+    if scope is not None:
+        await _append_turn_delta(conversation_id, scope[0], delta)
     async with _client() as c:
         await c.post("/pipeline", json=[
             ["SET", _k(conversation_id, "state_doc"), json.dumps(doc, default=str), "EX", str(_TTL_SECONDS)],
@@ -751,13 +836,14 @@ async def get_graph(conversation_id: str) -> dict[str, list]:
         return json.loads(raw) if raw else {"nodes": [], "edges": []}
 
 
-async def merge_graph(
-    conversation_id: str,
+def merge_graph_pure(
+    graph: dict[str, list],
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
 ) -> dict[str, list]:
-    """Merge new nodes/edges into the stored graph, deduped by id / triple."""
-    graph = await get_graph(conversation_id)
+    """Pure graph union, deduped by node id / edge (source, type, target) triple.
+    The exact transformation `merge_graph` persists; factored out so the path
+    graph assembler and the evals union deltas the same way production does."""
     by_id = {n["id"]: n for n in graph.get("nodes", [])}
     for n in nodes:
         by_id[n["id"]] = n
@@ -766,12 +852,401 @@ async def merge_graph(
     }
     for e in edges:
         edge_keys[f"{e['source']}::{e['type']}::{e['target']}"] = e
-    merged = {"nodes": list(by_id.values()), "edges": list(edge_keys.values())}
+    return {"nodes": list(by_id.values()), "edges": list(edge_keys.values())}
+
+
+async def merge_graph(
+    conversation_id: str,
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> dict[str, list]:
+    """Merge new nodes/edges into the stored graph, deduped by id / triple."""
+    graph = await get_graph(conversation_id)
+    merged = merge_graph_pure(graph, nodes, edges)
     async with _client() as c:
         await c.post("/pipeline", json=[
             ["SET", _k(conversation_id, "graph"), json.dumps(merged, default=str), "EX", str(_TTL_SECONDS)],
         ])
     return merged
+
+
+# ---------- Turn tree (branching, Stage 2a) ----------
+# The conversation as a TREE of turns. Every turn gets a stable `turn_id` and an
+# optional `parent_turn_id` (default: the previous head, which keeps linear
+# conversations a single-branch tree). Forking = submitting a new user message
+# whose parent_turn_id points at any prior turn. Three stores make a branch
+# self-contained:
+#
+#   - the tree index (turn metadata, parent pointers, status, context_after),
+#   - per-turn STATE deltas (the `_build_state_delta` projection + any mid-turn
+#     named_ids merges), which `assemble_state_doc` folds along a path with the
+#     SAME pure `_apply_delta` production uses, and
+#   - per-turn GRAPH deltas, unioned along a path for time-travel.
+#
+# Everything is additive: old conversations have no tree keys and keep the
+# merged-doc behavior; conversations with pre-tree turns get a one-time
+# `tree_base` snapshot so the fold starts from the state those turns built.
+
+_TREE_MAX_DEPTH = 500  # cycle guard for parent-pointer walks
+
+
+def new_turn_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+async def get_turn_tree(conversation_id: str) -> dict[str, dict[str, Any]]:
+    """turn_id -> tree entry for every registered turn (empty for old/linear
+    conversations that predate branching)."""
+    async with _client() as c:
+        r = await c.get(f"/hgetall/{_k(conversation_id, 'turn_tree')}")
+        r.raise_for_status()
+        raw = r.json().get("result") or []
+    # Upstash REST returns HGETALL as a flat [field, value, field, value, ...].
+    tree: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(raw) - 1, 2):
+        try:
+            entry = json.loads(raw[i + 1])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(entry, dict):
+            tree[raw[i]] = entry
+    return tree
+
+
+async def _write_tree_entry(conversation_id: str, entry: dict[str, Any]) -> None:
+    key = _k(conversation_id, "turn_tree")
+    async with _client() as c:
+        await c.post("/pipeline", json=[
+            ["HSET", key, entry["turn_id"], json.dumps(entry, default=str)],
+            ["EXPIRE", key, str(_TTL_SECONDS)],
+        ])
+
+
+async def update_turn_entry(
+    conversation_id: str, turn_id: str, **fields: Any
+) -> dict[str, Any] | None:
+    """Merge fields into one tree entry (status flips, terminator metadata,
+    context_after). Returns the updated entry, or None if the turn is unknown."""
+    tree = await get_turn_tree(conversation_id)
+    entry = tree.get(turn_id)
+    if entry is None:
+        return None
+    entry = {**entry, **{k: v for k, v in fields.items() if v is not None}}
+    await _write_tree_entry(conversation_id, entry)
+    return entry
+
+
+def latest_turn_id(tree: dict[str, dict[str, Any]]) -> str | None:
+    """The default fork parent: the registered turn with the highest turn_index
+    (the current head of a linear conversation)."""
+    best: dict[str, Any] | None = None
+    for entry in tree.values():
+        if best is None or int(entry.get("turn_index", -1)) > int(best.get("turn_index", -1)):
+            best = entry
+    return best.get("turn_id") if best else None
+
+
+def path_to(tree: dict[str, dict[str, Any]], turn_id: str) -> list[str]:
+    """Turn ids along root -> ... -> turn_id, following parent pointers. Ids
+    missing from the tree terminate the walk (the segment before the tree
+    existed is covered by the tree_base snapshot)."""
+    rev: list[str] = []
+    cur: str | None = turn_id
+    seen: set[str] = set()
+    while cur is not None and cur in tree and cur not in seen and len(rev) < _TREE_MAX_DEPTH:
+        seen.add(cur)
+        rev.append(cur)
+        cur = tree[cur].get("parent_turn_id")
+    rev.reverse()
+    return rev
+
+
+async def register_turn(
+    conversation_id: str,
+    turn_index: int,
+    user_message: str,
+    parent_turn_id: str | None = None,
+) -> dict[str, Any]:
+    """Create the tree entry for a new turn BEFORE it runs (status 'running'),
+    so the submit response and the live SSE stream can carry its coordinates.
+
+    - parent_turn_id omitted -> the current head (latest registered turn), which
+      preserves linear behavior exactly. Explicit parent = a fork.
+    - Raises ValueError on an unknown parent_turn_id (the API maps it to a 400).
+    - First tree-aware turn on a conversation that already has pre-tree turns
+      takes a one-time `tree_base` snapshot of the merged state/graph/context,
+      so path folds include everything those turns built."""
+    tree = await get_turn_tree(conversation_id)
+    if parent_turn_id is not None and parent_turn_id not in tree:
+        raise ValueError(f"unknown parent_turn_id: {parent_turn_id}")
+    if parent_turn_id is None:
+        parent_turn_id = latest_turn_id(tree)
+
+    if not tree and turn_index > 0:
+        await _snapshot_tree_base(conversation_id)
+
+    entry = {
+        "turn_id": new_turn_id(),
+        "parent_turn_id": parent_turn_id,
+        "turn_index": turn_index,
+        "user_message": user_message,
+        "status": "running",
+        "created_at": int(time.time()),
+    }
+    await _write_tree_entry(conversation_id, entry)
+    return entry
+
+
+# --- tree_base: the pre-branching prefix of an existing conversation ---
+
+
+def _empty_tree_base() -> dict[str, Any]:
+    return {"state_doc": _empty_state_doc(), "graph": {"nodes": [], "edges": []}, "context": ""}
+
+
+async def _snapshot_tree_base(conversation_id: str) -> None:
+    """Freeze the merged state/graph/context built by pre-tree turns as the
+    fold base. Taken once, under the turn lock, before the first tree turn."""
+    base = {
+        "state_doc": await get_state_doc(conversation_id),
+        "graph": await get_graph(conversation_id),
+        "context": await get_context(conversation_id),
+    }
+    async with _client() as c:
+        await c.post("/pipeline", json=[
+            ["SET", _k(conversation_id, "tree_base"), json.dumps(base, default=str), "EX", str(_TTL_SECONDS)],
+        ])
+
+
+async def _get_tree_base(conversation_id: str) -> dict[str, Any]:
+    async with _client() as c:
+        r = await c.get(f"/get/{_k(conversation_id, 'tree_base')}")
+        r.raise_for_status()
+        raw = r.json().get("result")
+    if not raw:
+        return _empty_tree_base()
+    try:
+        base = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return _empty_tree_base()
+    out = _empty_tree_base()
+    if isinstance(base, dict):
+        for k in out:
+            if isinstance(base.get(k), (dict, str)):
+                out[k] = base[k]
+    return out
+
+
+# --- Per-turn state deltas + the path-state assembler ---
+
+
+async def _append_turn_delta(
+    conversation_id: str, turn_id: str, delta: dict[str, Any]
+) -> None:
+    key = _k(conversation_id, f"turn_delta:{turn_id}")
+    async with _client() as c:
+        await c.post("/pipeline", json=[
+            ["RPUSH", key, json.dumps(delta, default=str)],
+            ["EXPIRE", key, str(_TTL_SECONDS)],
+        ])
+
+
+async def read_turn_deltas(conversation_id: str, turn_id: str) -> list[dict[str, Any]]:
+    async with _client() as c:
+        r = await c.get(f"/lrange/{_k(conversation_id, f'turn_delta:{turn_id}')}/0/-1")
+        r.raise_for_status()
+        raw = r.json().get("result") or []
+    out: list[dict[str, Any]] = []
+    for s in raw:
+        try:
+            d = json.loads(s)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(d, dict):
+            out.append(d)
+    return out
+
+
+def _normalize_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """Every key present + the registry projection recomputed — the same
+    normalization `get_state_doc` applies to a doc read from Redis."""
+    base = _empty_state_doc()
+    if isinstance(doc, dict):
+        for k in base:
+            if k in doc and doc[k] is not None:
+                base[k] = doc[k]
+    base["entities"] = _project_entities(base)
+    return base
+
+
+def assemble_state_doc(
+    base_doc: dict[str, Any],
+    deltas: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """PURE path-state assembler: fold `_apply_delta` (the exact read-modify
+    core `merge_state_doc` persists) over a path's deltas, starting from a deep
+    copy of the base. Deterministic, no I/O — the branching evals exercise this
+    directly, and `get_path_state_doc` is just the Redis wrapper around it."""
+    doc = _normalize_doc(json.loads(json.dumps(base_doc, default=str)))
+    for delta in deltas:
+        doc = _apply_delta(doc, delta)
+    return _normalize_doc(doc)
+
+
+# Folded docs for COMPLETED turns are immutable (a finished turn's delta list
+# never grows again), so cache them per (conversation, turn). The current,
+# still-running turn's deltas are re-read and folded on top fresh each time.
+_PATH_FOLD_CACHE: dict[tuple[str, str], str] = {}
+_PATH_FOLD_CACHE_MAX = 64
+
+
+def _cache_fold(key: tuple[str, str], doc: dict[str, Any]) -> None:
+    if len(_PATH_FOLD_CACHE) >= _PATH_FOLD_CACHE_MAX:
+        _PATH_FOLD_CACHE.pop(next(iter(_PATH_FOLD_CACHE)))
+    _PATH_FOLD_CACHE[key] = json.dumps(doc, default=str)
+
+
+async def get_path_state_doc(
+    conversation_id: str,
+    turn_id: str,
+    tree: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """The state_doc as seen along root -> turn_id: tree_base + the fold of that
+    path's per-turn deltas, and NOTHING from sibling branches. None when the
+    turn is not in the tree (legacy conversations fall back to the merged doc)."""
+    if tree is None:
+        tree = await get_turn_tree(conversation_id)
+    if turn_id not in tree:
+        return None
+    path = path_to(tree, turn_id)
+
+    # Longest cached completed prefix of the path, then fold forward from there.
+    doc: dict[str, Any] | None = None
+    start = 0
+    for i in range(len(path) - 1, -1, -1):
+        cached = _PATH_FOLD_CACHE.get((conversation_id, path[i]))
+        if cached is not None:
+            doc = json.loads(cached)
+            start = i + 1
+            break
+    if doc is None:
+        base = await _get_tree_base(conversation_id)
+        doc = assemble_state_doc(base.get("state_doc") or {}, [])
+
+    for tid in path[start:]:
+        deltas = await read_turn_deltas(conversation_id, tid)
+        for delta in deltas:
+            doc = _apply_delta(doc, delta)
+        if (tree.get(tid) or {}).get("status") == "done":
+            _cache_fold((conversation_id, tid), doc)
+    return _normalize_doc(doc)
+
+
+async def _path_state_doc_for_scope(
+    conversation_id: str, turn_id: str
+) -> dict[str, Any] | None:
+    """Scope hook used by `get_state_doc`: best-effort path assembly; any
+    failure falls back to the merged doc rather than breaking a live turn."""
+    try:
+        return await get_path_state_doc(conversation_id, turn_id)
+    except Exception:  # pragma: no cover - defensive: never fail a turn on this
+        log.warning("path_state_doc failed; falling back to merged doc", exc_info=True)
+        return None
+
+
+# --- Per-turn graph deltas + the path graph (time-travel payload) ---
+
+
+async def record_turn_graph_delta(
+    conversation_id: str,
+    turn_id: str,
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> None:
+    """Persist the turn's graph delta first-class (the nodes/edges this turn
+    added), keyed by turn_id. Written once at finalize."""
+    delta = {"nodes": nodes, "edges": edges}
+    key = _k(conversation_id, f"turn_graph:{turn_id}")
+    async with _client() as c:
+        await c.post("/pipeline", json=[
+            ["SET", key, json.dumps(delta, default=str), "EX", str(_TTL_SECONDS)],
+        ])
+
+
+async def read_turn_graph_delta(
+    conversation_id: str, turn_id: str
+) -> dict[str, list]:
+    async with _client() as c:
+        r = await c.get(f"/get/{_k(conversation_id, f'turn_graph:{turn_id}')}")
+        r.raise_for_status()
+        raw = r.json().get("result")
+    if not raw:
+        return {"nodes": [], "edges": []}
+    try:
+        delta = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {"nodes": [], "edges": []}
+    if not isinstance(delta, dict):
+        return {"nodes": [], "edges": []}
+    return {"nodes": delta.get("nodes") or [], "edges": delta.get("edges") or []}
+
+
+def accumulate_path_graph(
+    base_graph: dict[str, list],
+    deltas: list[dict[str, list]],
+) -> dict[str, list]:
+    """PURE path-graph accumulator: union the per-turn graph deltas along a path
+    onto the base, with the same dedupe production's merge_graph uses."""
+    graph = {
+        "nodes": list(base_graph.get("nodes") or []),
+        "edges": list(base_graph.get("edges") or []),
+    }
+    for d in deltas:
+        graph = merge_graph_pure(graph, d.get("nodes") or [], d.get("edges") or [])
+    return graph
+
+
+async def get_path_graph(
+    conversation_id: str,
+    turn_id: str,
+    tree: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """The accumulated evidence graph along root -> turn_id (the time-travel
+    payload), plus the turn's OWN delta so the frontend can pulse new-this-turn
+    nodes and dim inherited ones. None when the turn is not in the tree."""
+    if tree is None:
+        tree = await get_turn_tree(conversation_id)
+    if turn_id not in tree:
+        return None
+    path = path_to(tree, turn_id)
+    base = await _get_tree_base(conversation_id)
+    deltas = [await read_turn_graph_delta(conversation_id, tid) for tid in path]
+    graph = accumulate_path_graph(base.get("graph") or {"nodes": [], "edges": []}, deltas)
+    own = deltas[-1] if deltas else {"nodes": [], "edges": []}
+    return {
+        "turn_id": turn_id,
+        "path": path,
+        "graph": graph,
+        "turn_delta": own,
+    }
+
+
+async def resolve_prior_context(
+    conversation_id: str, parent_turn_id: str | None
+) -> str:
+    """The prose digest a turn should start from: the parent turn's stored
+    `context_after` when the parent is in the tree (path-scoped narrative), the
+    tree_base context for a first tree turn on an old conversation, else the
+    legacy global context string."""
+    tree = await get_turn_tree(conversation_id)
+    if parent_turn_id is not None and parent_turn_id in tree:
+        ctx = tree[parent_turn_id].get("context_after")
+        if isinstance(ctx, str):
+            return ctx
+    if tree and parent_turn_id is None:
+        base = await _get_tree_base(conversation_id)
+        return base.get("context") or ""
+    return await get_context(conversation_id)
 
 
 # ---------- Meta ----------
@@ -811,6 +1286,7 @@ async def hydrate(conversation_id: str) -> dict[str, Any]:
     summaries = await _read_list(conversation_id, "summaries")
     answers = await _read_list(conversation_id, "answers")
     state_doc = await get_state_doc(conversation_id)
+    tree = await get_turn_tree(conversation_id)
     return {
         "conversation_id": conversation_id,
         "meta": meta,
@@ -820,6 +1296,9 @@ async def hydrate(conversation_id: str) -> dict[str, Any]:
         "summaries": summaries,
         "answers": answers,
         "state_doc": state_doc,
+        # Branching (additive): the turn tree, sorted by turn_index, so a
+        # reloaded page can rebuild the canvas. Empty for old conversations.
+        "tree": sorted(tree.values(), key=lambda e: int(e.get("turn_index", 0))),
     }
 
 

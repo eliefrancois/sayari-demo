@@ -172,11 +172,20 @@ class MessageRequest(BaseModel):
     message: str
     pinned_node_ids: list[str] | None = None
     force_risk_report: bool = False
+    # Branching (Stage 2a): fork the conversation from any prior turn. Omitted
+    # (the only thing the current frontend sends) = continue the current head,
+    # i.e. exactly the linear behavior.
+    parent_turn_id: str | None = None
 
 
 class MessageResponse(BaseModel):
     turn_index: int
     event_cursor: int  # where the client should start streaming for this turn
+    # Branching: the new turn's tree coordinates (null on the native impl,
+    # which does not register tree turns). The SSE events for the turn carry
+    # the same ids, so the frontend can build the tree live either way.
+    turn_id: str | None = None
+    parent_turn_id: str | None = None
 
 
 @app.post("/conversations", response_model=CreateConversationResponse)
@@ -204,6 +213,11 @@ async def post_message(conversation_id: str, req: MessageRequest) -> MessageResp
     if not await conversations.exists(conversation_id):
         raise HTTPException(status_code=404, detail="unknown conversation_id")
 
+    if req.parent_turn_id is not None and settings.agent_impl != "graph":
+        raise HTTPException(
+            status_code=400, detail="branching requires AGENT_IMPL=graph"
+        )
+
     got_lock = await conversations.acquire_lock(conversation_id)
     if not got_lock:
         raise HTTPException(status_code=409, detail="a turn is already running")
@@ -212,13 +226,33 @@ async def post_message(conversation_id: str, req: MessageRequest) -> MessageResp
     turn_index = int(meta.get("turn_count", 0))
     event_cursor = await conversations.event_count(conversation_id)
 
+    # Branching (graph impl only): register the turn in the tree BEFORE it runs,
+    # so the response and the live SSE stream carry its coordinates. With no
+    # parent_turn_id this defaults to the current head — the linear case.
+    turn_id: str | None = None
+    parent_turn_id: str | None = None
+    if settings.agent_impl == "graph":
+        try:
+            entry = await conversations.register_turn(
+                conversation_id, turn_index, message, req.parent_turn_id
+            )
+        except ValueError as e:
+            await conversations.release_lock(conversation_id)
+            raise HTTPException(status_code=400, detail=str(e))
+        turn_id = entry["turn_id"]
+        parent_turn_id = entry.get("parent_turn_id")
+
     asyncio.create_task(
         _safe_run_turn(
             conversation_id, message, turn_index,
             req.pinned_node_ids or [], req.force_risk_report,
+            turn_id, parent_turn_id,
         )
     )
-    return MessageResponse(turn_index=turn_index, event_cursor=event_cursor)
+    return MessageResponse(
+        turn_index=turn_index, event_cursor=event_cursor,
+        turn_id=turn_id, parent_turn_id=parent_turn_id,
+    )
 
 
 async def _safe_run_turn(
@@ -227,6 +261,8 @@ async def _safe_run_turn(
     turn_index: int,
     pinned_node_ids: list[str],
     force_risk_report: bool,
+    turn_id: str | None = None,
+    parent_turn_id: str | None = None,
 ) -> None:
     """Run a turn, always releasing the lock and reaching a terminal state.
 
@@ -234,7 +270,8 @@ async def _safe_run_turn(
     AGENT_IMPL. The legacy /assess path stays native (see agent_native)."""
     try:
         await agent.run_turn(
-            conversation_id, message, turn_index, pinned_node_ids, force_risk_report
+            conversation_id, message, turn_index, pinned_node_ids,
+            force_risk_report, turn_id=turn_id, parent_turn_id=parent_turn_id,
         )
     except Exception as e:
         log.exception("background_turn_crashed", extra={"conversation_id": conversation_id})
@@ -244,6 +281,10 @@ async def _safe_run_turn(
                 {"type": "error", "data": {"message": str(e), "turn_index": turn_index}},
             )
             await conversations.set_state(conversation_id, "error")
+            if turn_id is not None:
+                await conversations.update_turn_entry(
+                    conversation_id, turn_id, status="error"
+                )
         except Exception:
             pass
     finally:
@@ -275,6 +316,39 @@ async def conversation_stream(conversation_id: str, cursor: int = 0) -> EventSou
             await asyncio.sleep(_POLL_INTERVAL_S)
 
     return EventSourceResponse(event_generator())
+
+
+# ---------- Branching (Stage 2a): turn tree + path graph ----------
+
+
+@app.get("/conversations/{conversation_id}/tree")
+async def conversation_tree(conversation_id: str) -> dict:
+    """The conversation as a tree of turns (sorted by turn_index): ids, parent
+    pointers, user text, status, terminator kind + report flags. Old/linear
+    conversations that predate branching return an empty list and the frontend
+    falls back to the flat `turns` from hydrate."""
+    if not await conversations.exists(conversation_id):
+        raise HTTPException(status_code=404, detail="unknown conversation_id")
+    tree = await conversations.get_turn_tree(conversation_id)
+    turns = sorted(tree.values(), key=lambda e: int(e.get("turn_index", 0)))
+    # context_after is an internal continuation payload, not frontend data.
+    for t in turns:
+        t.pop("context_after", None)
+    return {"conversation_id": conversation_id, "turns": turns}
+
+
+@app.get("/conversations/{conversation_id}/turns/{turn_id}/graph")
+async def turn_path_graph(conversation_id: str, turn_id: str) -> dict:
+    """Time-travel payload: the evidence graph accumulated along this turn's
+    path (root -> turn, union of that path's per-turn deltas only — sibling
+    branches excluded), plus the turn's OWN delta separately so the frontend
+    can pulse new-this-turn nodes and dim inherited ones."""
+    if not await conversations.exists(conversation_id):
+        raise HTTPException(status_code=404, detail="unknown conversation_id")
+    payload = await conversations.get_path_graph(conversation_id, turn_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="unknown turn_id")
+    return payload
 
 
 # ---------- Stream (SSE) ----------

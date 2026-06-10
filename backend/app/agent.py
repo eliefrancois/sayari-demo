@@ -26,9 +26,19 @@ async def run_turn(
     turn_index: int,
     pinned_node_ids: list[str] | None = None,
     force_risk_report: bool = False,
+    turn_id: str | None = None,
+    parent_turn_id: str | None = None,
 ) -> None:
     impl = get_settings().agent_impl
-    runner = agent_graph if impl == "graph" else agent_native
-    await runner.run_turn(
+    if impl == "graph":
+        # Branching (Stage 2a) is a graph-impl feature: the tree coordinates are
+        # threaded through so the turn runs path-scoped. The API only registers
+        # tree turns when AGENT_IMPL=graph, so native never sees them.
+        await agent_graph.run_turn(
+            conversation_id, user_message, turn_index, pinned_node_ids,
+            force_risk_report, turn_id=turn_id, parent_turn_id=parent_turn_id,
+        )
+        return
+    await agent_native.run_turn(
         conversation_id, user_message, turn_index, pinned_node_ids, force_risk_report
     )

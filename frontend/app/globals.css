@@ -221,6 +221,41 @@ pre,
   animation: caret-pulse 1s ease-in-out infinite;
 }
 
+/* Time-travel pulse: new-this-turn evidence nodes flash in (spec §6). Two
+   identical keyframe sets so consecutive scope changes can alternate names
+   and retrigger the animation on nodes that stay mounted. No fill mode — the
+   node settles back to its style-driven risk glow when the pulse ends. */
+@keyframes node-pulse-in {
+  0% {
+    opacity: 0;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  45% {
+    opacity: 1;
+    box-shadow:
+      0 0 0 7px color-mix(in oklab, var(--foreground) 22%, transparent),
+      0 0 30px color-mix(in oklab, var(--foreground) 30%, transparent);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes node-pulse-in-b {
+  0% {
+    opacity: 0;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  45% {
+    opacity: 1;
+    box-shadow:
+      0 0 0 7px color-mix(in oklab, var(--foreground) 22%, transparent),
+      0 0 30px color-mix(in oklab, var(--foreground) 30%, transparent);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
 @keyframes shimmer {
   0% {
     background-position: -200% 0;

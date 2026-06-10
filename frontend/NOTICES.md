@@ -27,6 +27,23 @@ data flow):
   `toolMeta.ts`)
 - `components/GraphPanel.tsx` — grid background configuration
   (donor: `src/renderer/src/components/Canvas/Canvas.tsx`)
+- `lib/canvas-layout.ts` — canvas layout engine: node-size constants, the
+  push-right sibling collision cascade, position-aware edge handle selection,
+  zoom-corrected DOM height measurement, and the child placement heuristic
+  (follow-ups below the parent, fork siblings in a right lane)
+  (donor: `src/renderer/src/lib/canvasConstants.ts`,
+  `collisionResolution.ts`, `edgeHandles.ts`, `nodeDom.ts`,
+  `src/renderer/src/hooks/useBranchFromNode.ts`)
+- `components/canvas/InvestigationCanvas.tsx` — React Flow host
+  configuration (pan/zoom behavior, 32px line grid, local node-state drag
+  pattern, drag-aware edge handle recomputation) and the draft-child fork
+  flow
+  (donor: `src/renderer/src/components/Canvas/Canvas.tsx`,
+  `src/renderer/src/hooks/useBranchFromNode.ts`)
+- `components/canvas/TurnNode.tsx` — node chrome: four-side connection
+  handles, hover-revealed circular `+` branch button, selection ring, and
+  the draft-card textarea pattern (Enter submits, Esc cancels)
+  (donor: `src/renderer/src/components/Canvas/CustomNode.tsx`)
 
 MIT License
 

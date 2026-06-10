@@ -68,8 +68,8 @@ Split-pane, thin vertical hairline divider:
 
 ## 7. Build order (when unblocked)
 
-1. Tokens + grid canvas + card/motion primitives (light theme).
-2. Restyle `GraphPanel`: source rings + risk glow + legend + traversal-path highlight.
-3. Branch tree: cards, badges, tool blocks, fork `+`, auto-layout + drag, bezier edges.
-4. Time-travel: click-to-regen with pulse/dim (needs Tier 3 backend conversation tree + per-turn graph deltas).
-5. Risk Report card + claim click-to-highlight.
+1. ✅ Tokens + grid canvas + card/motion primitives (light theme). *(stage 1, commit 19f3a7a)*
+2. ✅ Restyle `GraphPanel`: source rings + risk glow + legend + traversal-path highlight. *(stage 1, commit 19f3a7a)*
+3. ✅ Branch tree: cards, badges, tool blocks, fork `+`, auto-layout + drag, bezier edges. *(stage 2b)*
+4. ✅ Time-travel: click-to-regen with pulse/dim (needs Tier 3 backend conversation tree + per-turn graph deltas). *(stage 2b, on the stage 2a backend)*
+5. Risk Report card + claim click-to-highlight. *(card + highlight landed in stages 1–2b; PDF export still open)*

@@ -18,6 +18,8 @@ import type {
   ExpandKind,
   ExpandResponse,
   ConversationHydrate,
+  TreeTurn,
+  TurnGraphResponse,
 } from "./types";
 
 const BACKEND_URL =
@@ -36,6 +38,11 @@ export interface TurnCallbacks {
 export interface SendMessageOptions {
   pinnedNodeIds?: string[];
   forceRiskReport?: boolean;
+  /**
+   * Fork/extend: parent the new turn on this prior turn (stage 2a tree).
+   * Omitted = linear append on the current head, exactly the old behavior.
+   */
+  parentTurnId?: string | null;
 }
 
 const EVENT_TYPES: EventType[] = [
@@ -62,29 +69,73 @@ export async function createConversation(): Promise<string> {
   return conversation_id;
 }
 
-/** Submit one user turn. Returns the turn index and the event cursor to stream from. */
+/** Submit one user turn. Returns the turn ids and the event cursor to stream from. */
 export async function sendMessage(
   conversationId: string,
   message: string,
   opts: SendMessageOptions = {}
-): Promise<{ turnIndex: number; eventCursor: number }> {
+): Promise<{
+  turnIndex: number;
+  eventCursor: number;
+  turnId: string | null;
+  parentTurnId: string | null;
+}> {
+  const body: Record<string, unknown> = {
+    message,
+    pinned_node_ids: opts.pinnedNodeIds ?? [],
+    force_risk_report: opts.forceRiskReport ?? false,
+  };
+  // Only ship the field when forking — omitting it keeps the old linear
+  // contract byte-identical (and stays safe against older backends).
+  if (opts.parentTurnId) body.parent_turn_id = opts.parentTurnId;
   const resp = await fetch(`${BACKEND_URL}/conversations/${conversationId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      pinned_node_ids: opts.pinnedNodeIds ?? [],
-      force_risk_report: opts.forceRiskReport ?? false,
-    }),
+    body: JSON.stringify(body),
   });
   if (!resp.ok) {
     throw new Error(`send message failed: ${resp.status} ${await resp.text()}`);
   }
-  const { turn_index, event_cursor } = (await resp.json()) as {
-    turn_index: number;
-    event_cursor: number;
+  const { turn_index, event_cursor, turn_id, parent_turn_id } =
+    (await resp.json()) as {
+      turn_index: number;
+      event_cursor: number;
+      turn_id?: string;
+      parent_turn_id?: string | null;
+    };
+  return {
+    turnIndex: turn_index,
+    eventCursor: event_cursor,
+    turnId: turn_id ?? null,
+    parentTurnId: parent_turn_id ?? null,
   };
-  return { turnIndex: turn_index, eventCursor: event_cursor };
+}
+
+/** Fetch the turn tree. Empty list for pre-branching conversations. */
+export async function fetchTree(conversationId: string): Promise<TreeTurn[]> {
+  const resp = await fetch(`${BACKEND_URL}/conversations/${conversationId}/tree`);
+  if (!resp.ok) {
+    throw new Error(`fetch tree failed: ${resp.status} ${await resp.text()}`);
+  }
+  const { turns } = (await resp.json()) as { turns: TreeTurn[] };
+  return turns ?? [];
+}
+
+/**
+ * Time-travel: the evidence graph accumulated along a turn's root -> turn
+ * path, plus the turn's own delta (for pulse-in vs dim rendering).
+ */
+export async function fetchTurnGraph(
+  conversationId: string,
+  turnId: string
+): Promise<TurnGraphResponse> {
+  const resp = await fetch(
+    `${BACKEND_URL}/conversations/${conversationId}/turns/${encodeURIComponent(turnId)}/graph`
+  );
+  if (!resp.ok) {
+    throw new Error(`fetch turn graph failed: ${resp.status} ${await resp.text()}`);
+  }
+  return (await resp.json()) as TurnGraphResponse;
 }
 
 /** Open an SSE stream for the current turn, starting at `cursor`. */

@@ -49,11 +49,22 @@ export interface AgentThought {
 
 export interface Turn {
   index: number;
+  /**
+   * Stable server turn id (stage 2a tree). Null only for legacy turns that
+   * predate branching — those render as a flat vertical chain and can't be
+   * forked from or time-traveled to.
+   */
+  turnId: string | null;
+  /** Parent turn in the tree. Null for the root (and all legacy turns). */
+  parentTurnId: string | null;
   userMessage: string;
   pinnedNodeIds: string[];
   forceRiskReport: boolean;
   status: TurnStatus;
   kind: TurnKind;
+  /** Guarded report-ready flag restored from the tree on reload (live turns
+   *  carry it on `answer.report_ready`). */
+  reportReady: boolean;
   thoughts: AgentThought[];
   /** Live text of the response currently being generated (token stream).
    *  Cleared when that response finalizes into a thought / answer / summary. */
@@ -72,6 +83,14 @@ export interface ConversationState {
   /** Status of the most recent / active turn. */
   status: ConversationStatus;
   turns: Turn[];
+
+  /**
+   * The selected card on the investigation canvas. Null = follow the live
+   * head (the most recently created turn), which is the default linear-append
+   * behavior. A non-null selection drives both the composer's parent_turn_id
+   * and the evidence graph's time-travel scope.
+   */
+  activeTurnId: string | null;
 
   /** All unique nodes discovered across the whole conversation. */
   nodes: Map<string, GraphNode>;
@@ -108,6 +127,7 @@ export function initialState(): ConversationState {
     conversationId: null,
     status: "idle",
     turns: [],
+    activeTurnId: null,
     nodes: new Map(),
     edges: new Map(),
     highlightedNodeIds: new Set(),
@@ -126,10 +146,13 @@ export type Action =
   | {
       type: "turn_sent";
       turnIndex: number;
+      turnId: string | null;
+      parentTurnId: string | null;
       userMessage: string;
       pinnedNodeIds: string[];
       forceRiskReport: boolean;
     }
+  | { type: "select_turn"; turnId: string | null }
   | { type: "event"; event: StreamEvent }
   | { type: "closed"; reason: "done" | "error" | "network" | "manual" }
   | { type: "fatal"; message: string }
@@ -164,14 +187,58 @@ export function activeTurn(state: ConversationState): Turn | null {
   return state.turns.length ? state.turns[state.turns.length - 1] : null;
 }
 
+/** The live head: the most recently created turn (last in creation order). */
+export function liveHeadTurn(state: ConversationState): Turn | null {
+  return activeTurn(state);
+}
+
+/** Lookup a turn by its server turn id. */
+export function turnById(state: ConversationState, turnId: string): Turn | null {
+  return state.turns.find((t) => t.turnId === turnId) ?? null;
+}
+
+/**
+ * The ACTIVE PATH: root -> turn, walking parent pointers. For legacy turns
+ * without ids the chain degenerates to "every turn up to this index" (the
+ * linear, pre-branching view). Returns [] when turnId is unknown.
+ */
+export function pathToRoot(state: ConversationState, turnId: string): Turn[] {
+  const start = turnById(state, turnId);
+  if (!start) return [];
+  const byId = new Map<string, Turn>();
+  for (const t of state.turns) if (t.turnId) byId.set(t.turnId, t);
+  const path: Turn[] = [start];
+  let cursor: Turn | undefined = start;
+  // Guard against cycles (corrupt data) by capping at the turn count.
+  for (let hops = 0; hops < state.turns.length && cursor; hops++) {
+    if (!cursor.parentTurnId) break;
+    cursor = byId.get(cursor.parentTurnId);
+    if (cursor) path.unshift(cursor);
+  }
+  return path;
+}
+
+/**
+ * The turn the composer should parent on: the explicit selection if any,
+ * otherwise null (= linear append on the server-side head, today's behavior).
+ */
+export function composerParentTurnId(state: ConversationState): string | null {
+  return state.activeTurnId;
+}
+
 function newTurn(
   index: number,
   userMessage: string,
   pinnedNodeIds: string[],
-  forceRiskReport: boolean
+  forceRiskReport: boolean,
+  turnId: string | null = null,
+  parentTurnId: string | null = null
 ): Turn {
   return {
     index,
+    turnId,
+    parentTurnId,
+    reportReady: false,
     userMessage,
     pinnedNodeIds,
     forceRiskReport,
@@ -208,12 +275,22 @@ export function reduce(state: ConversationState, action: Action): ConversationSt
             action.turnIndex,
             action.userMessage,
             action.pinnedNodeIds,
-            action.forceRiskReport
+            action.forceRiskReport,
+            action.turnId,
+            action.parentTurnId
           ),
         ],
+        // The new turn is the live head now — clear the selection so the
+        // graph returns to live mode and streaming renders normally.
+        activeTurnId: null,
         // Pins are consumed by the turn; clear so they don't leak forward.
         pinnedNodeIds: new Set(),
       };
+
+    case "select_turn":
+      return state.activeTurnId === action.turnId
+        ? state
+        : { ...state, activeTurnId: action.turnId };
 
     case "fatal":
       return {
@@ -315,19 +392,31 @@ function patchActive(turns: Turn[], fn: (t: Turn) => Turn): Turn[] {
   return turns.map((t, i) => (i === last ? fn(t) : t));
 }
 
-/** Immutably update the turn matching `index` (falls back to the last turn). */
-function patchTurn(turns: Turn[], index: number | undefined, fn: (t: Turn) => Turn): Turn[] {
+type TurnRoute = { turnId?: string; turnIndex?: number };
+
+/**
+ * Immutably update the turn an event belongs to. Routing precedence:
+ * `turn_id` (stage 2a — branch-safe, every SSE event carries it), then
+ * `turn_index` (legacy linear), then the last turn.
+ */
+function patchTurn(turns: Turn[], route: TurnRoute, fn: (t: Turn) => Turn): Turn[] {
   if (!turns.length) return turns;
-  let target = turns.length - 1;
-  if (typeof index === "number") {
-    const found = turns.findIndex((t) => t.index === index);
-    if (found >= 0) target = found;
+  let target = -1;
+  if (route.turnId) {
+    target = turns.findIndex((t) => t.turnId === route.turnId);
   }
+  if (target < 0 && typeof route.turnIndex === "number") {
+    target = turns.findIndex((t) => t.index === route.turnIndex);
+  }
+  if (target < 0) target = turns.length - 1;
   return turns.map((t, i) => (i === target ? fn(t) : t));
 }
 
 function applyEvent(state: ConversationState, evt: StreamEvent): ConversationState {
-  const ti = evt.data.turn_index;
+  const ti: TurnRoute = {
+    turnId: evt.data.turn_id,
+    turnIndex: evt.data.turn_index,
+  };
 
   switch (evt.type) {
     case "agent_started":
@@ -468,6 +557,7 @@ function applyEvent(state: ConversationState, evt: StreamEvent): ConversationSta
           kind: "answer",
           streamingText: "",
           answer: evt.data.answer,
+          reportReady: evt.data.answer.report_ready ?? false,
         })),
       };
 
@@ -507,15 +597,30 @@ function hydrate(state: ConversationState, p: ConversationHydrate): Conversation
   const edges = new Map<string, GraphEdge>();
   for (const e of p.graph?.edges ?? []) edges.set(edgeKey(e), e);
 
+  // Tree metadata by turn_index (stage 2a). Pre-branching conversations have
+  // an empty/absent tree; their turns keep null ids and render as the flat
+  // vertical chain, exactly the old look.
+  const treeByIndex = new Map<number, NonNullable<ConversationHydrate["tree"]>[number]>();
+  for (const entry of p.tree ?? []) treeByIndex.set(entry.turn_index, entry);
+
   // Reconstruct turns from the persisted turn list, attaching the matching
   // summary/answer in order. (We don't persist per-turn thoughts/toolCalls;
   // reload shows results, not the live reasoning trail.)
   let summaryCursor = 0;
   let answerCursor = 0;
   const turns: Turn[] = (p.turns ?? []).map((tmeta) => {
-    const t = newTurn(tmeta.turn_index, tmeta.user_message, [], false);
+    const tree = treeByIndex.get(tmeta.turn_index);
+    const t = newTurn(
+      tmeta.turn_index,
+      tmeta.user_message,
+      [],
+      false,
+      tree?.turn_id ?? null,
+      tree?.parent_turn_id ?? null
+    );
     t.status = "done";
     t.finishedAt = t.startedAt;
+    t.reportReady = tree?.report_ready ?? false;
     if (tmeta.kind === "investigation") {
       t.kind = "investigation";
       t.summary = p.summaries?.[summaryCursor++] ?? null;
@@ -529,7 +634,9 @@ function hydrate(state: ConversationState, p: ConversationHydrate): Conversation
   return {
     ...initialState(),
     conversationId: p.conversation_id,
-    status: p.state === "running" ? "running" : "done",
+    // A hydrated "running" state has no live stream to re-attach, so treat it
+    // as done — otherwise the composer would be locked forever.
+    status: "done",
     turns,
     nodes,
     edges,

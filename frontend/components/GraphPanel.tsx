@@ -123,6 +123,9 @@ function buildEdges(edges: ERGraphEdge[]): Edge[] {
     const stroke = dualUse ? DUAL_USE_COLOR : EDGE_COLOR;
     return {
       id: `e-${i}-${e.source}-${e.target}-${e.type}`,
+      // ER edge identity, matching the store's edgeKey — lets the time-travel
+      // overlay dim inherited edges without re-deriving type from the id.
+      data: { erKey: `${e.source}::${e.type}::${e.target}` },
       source: e.source,
       target: e.target,
       label: dualUse ? "ships_to ⚠ dual-use" : e.type,
@@ -214,6 +217,18 @@ export interface GraphPanelProps {
   showOverlayLeads?: boolean;
   /** Toggle the unpinned-leads overlay (clicking the "N of M leads" badge). */
   onToggleLeads?: () => void;
+  /**
+   * Time-travel scope (spec §6). When set, the rendered nodes/edges are the
+   * path-accumulated graph of a selected turn: members of `nodeIds`/`edgeKeys`
+   * are the turn's OWN delta and pulse in; everything else is inherited from
+   * ancestor turns and renders dimmed. `tick` increments per scope change so
+   * the pulse retriggers on nodes that stay mounted across selections.
+   */
+  scopedDelta?: {
+    nodeIds: Set<string>;
+    edgeKeys: Set<string>;
+    tick: number;
+  } | null;
 }
 
 /**
@@ -264,6 +279,7 @@ function GraphPanelInner({
   overlayLeadNodes,
   showOverlayLeads,
   onToggleLeads,
+  scopedDelta,
 }: GraphPanelProps) {
   const reactFlow = useReactFlow();
 
@@ -545,14 +561,22 @@ function GraphPanelInner({
     return () => window.clearTimeout(t);
   }, [focusRequest, reactFlow]);
 
-  // Apply highlight (traversal path / claim hover) and pinned-context cues as
-  // style overlays. Highlight is a neutral foreground glow — color stays
-  // reserved for risk + source — and wins over pinned when both apply.
+  // Apply highlight (traversal path / claim hover), pinned-context cues, and
+  // the time-travel scope as style overlays. Highlight is a neutral
+  // foreground glow — color stays reserved for risk + source — and wins over
+  // pinned when both apply. Time-travel: this turn's own delta pulses in,
+  // inherited (ancestor-path) evidence dims (spec §6).
   const styledNodes = useMemo(() => {
     const hasHi = highlightedNodeIds && highlightedNodeIds.size > 0;
     const hasPin = pinnedNodeIds && pinnedNodeIds.size > 0;
     const hasOverlay = overlayIdSet.size > 0;
-    if (!hasHi && !hasPin && !hasOverlay) return rfNodes;
+    if (!hasHi && !hasPin && !hasOverlay && !scopedDelta) return rfNodes;
+    // Alternate keyframe names per scope change so the pulse retriggers on
+    // DOM nodes React Flow keeps mounted across selections.
+    const pulseName =
+      scopedDelta && scopedDelta.tick % 2 === 0
+        ? "node-pulse-in"
+        : "node-pulse-in-b";
     return rfNodes.map((n) => {
       // Overlay (unpinned-lead) nodes render dimmed + dashed so they read as
       // secondary/exploratory vs the committed graph.
@@ -564,6 +588,18 @@ function GraphPanelInner({
       }
       if (hasHi && highlightedNodeIds!.has(n.id)) {
         return { ...n, style: { ...n.style, boxShadow: HIGHLIGHT_GLOW } };
+      }
+      if (scopedDelta) {
+        if (scopedDelta.nodeIds.has(n.id)) {
+          return {
+            ...n,
+            style: {
+              ...n.style,
+              animation: `${pulseName} 750ms cubic-bezier(0.16, 1, 0.3, 1)`,
+            },
+          };
+        }
+        return { ...n, style: { ...n.style, opacity: 0.4 } };
       }
       if (hasPin && pinnedNodeIds!.has(n.id)) {
         return {
@@ -577,7 +613,18 @@ function GraphPanelInner({
       }
       return n;
     });
-  }, [rfNodes, highlightedNodeIds, pinnedNodeIds, overlayIdSet]);
+  }, [rfNodes, highlightedNodeIds, pinnedNodeIds, overlayIdSet, scopedDelta]);
+
+  // Edge counterpart of the time-travel scope: inherited edges dim, the
+  // turn's own edges keep full presence.
+  const styledEdges = useMemo(() => {
+    if (!scopedDelta) return rfEdges;
+    return rfEdges.map((e) => {
+      const erKey = (e.data as { erKey?: string } | undefined)?.erKey;
+      if (erKey && scopedDelta.edgeKeys.has(erKey)) return e;
+      return { ...e, style: { ...e.style, opacity: 0.35 } };
+    });
+  }, [rfEdges, scopedDelta]);
 
   const [menu, setMenu] = useState<ContextMenuState>(null);
   const [hover, setHover] = useState<HoverState>(null);
@@ -617,16 +664,20 @@ function GraphPanelInner({
       {nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-center">
           <div>
-            <div className="text-sm text-muted-foreground">No graph yet</div>
+            <div className="text-sm text-muted-foreground">
+              {scopedDelta ? "No evidence at this turn" : "No graph yet"}
+            </div>
             <div className="mt-1 text-xs text-muted-foreground/60">
-              Start an investigation to see the corporate network materialize.
+              {scopedDelta
+                ? "This turn's path hasn't accumulated graph evidence yet."
+                : "Start an investigation to see the corporate network materialize."}
             </div>
           </div>
         </div>
       )}
       <ReactFlow
         nodes={styledNodes}
-        edges={rfEdges}
+        edges={styledEdges}
         onNodesChange={handleNodesChange}
         onNodeContextMenu={handleContextMenu}
         onNodeMouseEnter={handleNodeMouseEnter}

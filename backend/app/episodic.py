@@ -124,6 +124,8 @@ def build_episode(
     intent: str | None,
     delta: dict[str, Any],
     tools_used: list[str],
+    turn_id: str | None = None,
+    parent_turn_id: str | None = None,
 ) -> dict[str, Any]:
     """Build ONE structured episode from the turn's STRUCTURED outputs (the same
     `_build_state_delta` projection L3 persists) — never the prose answer. Pure
@@ -205,6 +207,11 @@ def build_episode(
     return {
         "conversation_id": conversation_id,
         "turn": turn_index,
+        # Branching (Stage 2a): tree coordinates ride on every episode so a
+        # later path-aware episodic phase can filter by branch. Deliberately
+        # NOT used for filtering yet — this just keeps the store unpoisoned.
+        "turn_id": turn_id,
+        "parent_turn_id": parent_turn_id,
         "intent": intent,
         "subjects": subjects,
         "findings": findings,
@@ -241,6 +248,8 @@ async def write_episode(episode: dict[str, Any]) -> bool:
     metadata = {
         "conversation_id": cid,
         "turn": turn,
+        "turn_id": episode.get("turn_id"),
+        "parent_turn_id": episode.get("parent_turn_id"),
         "intent": episode.get("intent"),
         "subjects": episode.get("subjects") or [],
         "entity_ids": episode.get("entity_ids") or [],

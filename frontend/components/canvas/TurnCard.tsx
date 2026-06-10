@@ -12,11 +12,12 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Brain, ChevronDown, Loader2 } from "lucide-react";
+import { Brain, ChevronDown, FileText, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Markdown } from "@/components/ui/markdown";
 import type { AgentThought, Turn } from "@/lib/conversation-store";
 import type { GraphNode } from "@/lib/types";
+import { inferThreadType, THREAD_TYPE_META } from "@/lib/canvas-layout";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { AnswerCard } from "../AnswerCard";
 
@@ -60,6 +61,10 @@ export function TurnCard({
     isRunning && turn.streamingText && !turn.summary && !turn.answer;
   const showWaiting =
     isRunning && !turn.streamingText && !turn.summary && !turn.answer;
+  // Thread-type corner badge (spec §4): inferred from the turn's intent and
+  // the tools it actually used; neutral (no badge) when nothing matches.
+  const threadType = inferThreadType(turn);
+  const reportReady = turn.reportReady || turn.answer?.report_ready === true;
 
   return (
     <motion.div
@@ -74,10 +79,37 @@ export function TurnCard({
         <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
           turn {String(turn.index + 1).padStart(2, "0")}
         </span>
+        {threadType && (
+          <span
+            className="rounded-md border px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em]"
+            style={{
+              color: THREAD_TYPE_META[threadType].color,
+              borderColor: `color-mix(in oklab, ${THREAD_TYPE_META[threadType].color} 35%, transparent)`,
+            }}
+          >
+            {THREAD_TYPE_META[threadType].label}
+          </span>
+        )}
         {turn.kind === "investigation" && (
           <span className="rounded-md border border-border px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] text-foreground">
             report
           </span>
+        )}
+        {reportReady && !turn.summary && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onGenerateReport(
+                turn.answer?.risk_report_prompt ||
+                  "Generate a full risk report based on what we've found."
+              );
+            }}
+            title="The agent has enough evidence — compile the formal risk report"
+            className="nodrag flex cursor-pointer items-center gap-1 rounded-md bg-foreground px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] text-background transition-opacity hover:opacity-85"
+          >
+            <FileText size={9} /> report ready
+          </button>
         )}
         {isError && (
           <span className="rounded-md border border-red-300 bg-red-50 px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] text-red-700">
@@ -91,6 +123,10 @@ export function TurnCard({
         </span>
       </div>
 
+      {/* Body is nodrag (donor pattern): the card drags from its chrome
+          (badge strip / padding), while text stays selectable and inner
+          buttons stay clickable without starting a canvas drag. */}
+      <div className="nodrag select-text">
       {/* User question */}
       <div className="whitespace-pre-wrap break-words text-[13px] font-semibold leading-snug text-foreground">
         {turn.userMessage}
@@ -173,6 +209,7 @@ export function TurnCard({
           />
         </div>
       )}
+      </div>
     </motion.div>
   );
 }

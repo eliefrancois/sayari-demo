@@ -184,9 +184,16 @@ export type ExpandKind =
 /**
  * Conversation events all carry an optional `turn_index` so the reducer can
  * route each event to the correct turn in the thread. Single-shot /assess
- * events omit it (treated as turn 0).
+ * events omit it (treated as turn 0). Stage 2a additionally stamps every
+ * event with the running turn's `turn_id` + `parent_turn_id`, which is what
+ * lets the branching canvas attach a stream to the right card without a
+ * lookup (docs/11-branching-backend.md).
  */
-type WithTurn<T> = T & { turn_index?: number };
+type WithTurn<T> = T & {
+  turn_index?: number;
+  turn_id?: string;
+  parent_turn_id?: string | null;
+};
 
 export type StreamEvent =
   | { type: "agent_started"; data: WithTurn<{ input: string }> }
@@ -228,6 +235,37 @@ export type StreamEvent =
 
 export type EventType = StreamEvent["type"];
 
+/**
+ * One turn's metadata in the conversation turn tree (GET /conversations/{id}/tree,
+ * also under `tree` in the hydrate payload). Pre-branching conversations return
+ * an empty list — fall back to the flat `turns`.
+ */
+export interface TreeTurn {
+  turn_id: string;
+  parent_turn_id: string | null;
+  turn_index: number;
+  user_message: string;
+  status: "running" | "done" | "error";
+  created_at?: number;
+  /** Set once the turn finishes: "answer" | "summary" | "clarification". */
+  kind?: string | null;
+  report_ready?: boolean;
+  offer_risk_report?: boolean;
+}
+
+/**
+ * Response from GET /conversations/{id}/turns/{turn_id}/graph — the
+ * time-travel payload. `graph` is accumulated along the root -> turn path
+ * (sibling branches excluded); `turn_delta` is this turn's own contribution,
+ * separated so the canvas can pulse new-this-turn nodes and dim inherited ones.
+ */
+export interface TurnGraphResponse {
+  turn_id: string;
+  path: string[];
+  graph: { nodes: GraphNode[]; edges: GraphEdge[] };
+  turn_delta: { nodes: GraphNode[]; edges: GraphEdge[] };
+}
+
 /** Payload from GET /conversations/{id} — used to restore on page reload. */
 export interface ConversationHydrate {
   conversation_id: string;
@@ -237,6 +275,8 @@ export interface ConversationHydrate {
   turns: { turn_index: number; kind: string; user_message: string; entity_name?: string; offer_risk_report?: boolean }[];
   summaries: RiskSummary[];
   answers: TurnAnswer[];
+  /** Turn tree (stage 2a). Empty/absent for pre-branching conversations. */
+  tree?: TreeTurn[];
 }
 
 /**

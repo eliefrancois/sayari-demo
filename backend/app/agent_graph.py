@@ -88,6 +88,11 @@ class TurnState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     conversation_id: str
     turn_index: int
+    # Branching (Stage 2a): the turn's tree coordinates. None on the eval path
+    # and for the legacy native-compatible call shape; when set, the whole turn
+    # runs inside conversations.turn_scope so every state read is path-scoped.
+    turn_id: str | None
+    parent_turn_id: str | None
     user_message: str
     prior_context: str
     persist: bool  # True for live turns (emit SSE + write Redis); False for evals
@@ -738,6 +743,8 @@ async def finalize_node(state: TurnState) -> dict[str, Any]:
     emitted SSE events are identical between impls."""
     cid = state["conversation_id"]
     ti = state["turn_index"]
+    turn_id = state.get("turn_id")
+    parent_turn_id = state.get("parent_turn_id")
     persist = state["persist"]
     user_message = state["user_message"]
 
@@ -760,6 +767,12 @@ async def finalize_node(state: TurnState) -> dict[str, Any]:
     # Persist the graph delta the agent traversed this turn.
     if state["turn_nodes"] or state["turn_edges"]:
         await conversations.merge_graph(cid, state["turn_nodes"], state["turn_edges"])
+    # Branching: the same delta, stored first-class keyed by turn_id, so the
+    # path graph (time-travel) can be accumulated per branch.
+    if turn_id is not None:
+        await conversations.record_turn_graph_delta(
+            cid, turn_id, state["turn_nodes"], state["turn_edges"]
+        )
 
     # Persist the structured investigation state (exact recall): resolved
     # entities, the full lead lists, sanctions verdicts, pinned ids, turn log.
@@ -773,10 +786,16 @@ async def finalize_node(state: TurnState) -> dict[str, Any]:
     # provisioned + flag-enabled, so the live demo is unaffected.
     if episodic.is_enabled():
         episode = episodic.build_episode(
-            cid, ti, state.get("intent"), delta, sorted(set(state["tools_used"]))
+            cid, ti, state.get("intent"), delta, sorted(set(state["tools_used"])),
+            turn_id=turn_id, parent_turn_id=parent_turn_id,
         )
         await episodic.write_episode(episode)
 
+    # Tree coordinates ride along on the per-turn metadata (additive fields;
+    # consumers that predate branching ignore them).
+    tree_fields = (
+        {"turn_id": turn_id, "parent_turn_id": parent_turn_id} if turn_id else {}
+    )
     if summary is not None:
         review = build_sanctions_review(summary, state["raw_strong_hits"])
         if review is not None:
@@ -786,6 +805,7 @@ async def finalize_node(state: TurnState) -> dict[str, Any]:
         await conversations.append_turn(cid, {
             "turn_index": ti, "kind": "investigation",
             "user_message": user_message, "entity_name": summary.entity_name,
+            **tree_fields,
         })
         digest = digest_summary(ti, summary)
         title = summary.entity_name
@@ -796,6 +816,7 @@ async def finalize_node(state: TurnState) -> dict[str, Any]:
             "turn_index": ti, "kind": "answer",
             "user_message": user_message,
             "offer_risk_report": answer.offer_risk_report,
+            **tree_fields,
         })
         digest = digest_answer(ti, user_message, answer)
         title = user_message[:60]
@@ -804,6 +825,26 @@ async def finalize_node(state: TurnState) -> dict[str, Any]:
     new_context = bound_context_digest((prior + "\n" + digest).strip() if prior else digest)
     await conversations.set_context(cid, new_context)
     await conversations.bump_meta(cid, title=title)
+
+    # Close out the tree entry: terminator metadata for the GET tree payload,
+    # and `context_after` so a child turn (linear or fork) starts from THIS
+    # path's narrative digest. The final state delta was already appended by
+    # merge_state_doc above, so flipping status to done here is safe — a done
+    # turn's delta list never grows again.
+    if turn_id is not None:
+        await conversations.update_turn_entry(
+            cid, turn_id,
+            status="done",
+            kind="investigation" if summary is not None else "answer",
+            entity_name=summary.entity_name if summary is not None else None,
+            report_ready=(
+                True if summary is not None else bool(answer.report_ready)
+            ),
+            offer_risk_report=(
+                None if summary is not None else bool(answer.offer_risk_report)
+            ),
+            context_after=new_context,
+        )
 
     await conversations.set_state(cid, "idle")
     await _emit(cid, ti, "done")
@@ -862,6 +903,8 @@ def _initial_state(
     tool_names: list[str] | None = None,
     intent: str | None = None,
     pinned_node_ids: list[str] | None = None,
+    turn_id: str | None = None,
+    parent_turn_id: str | None = None,
 ) -> TurnState:
     return {
         "messages": [
@@ -870,6 +913,8 @@ def _initial_state(
         ],
         "conversation_id": conversation_id,
         "turn_index": turn_index,
+        "turn_id": turn_id,
+        "parent_turn_id": parent_turn_id,
         "user_message": user_message,
         "prior_context": prior_context,
         "persist": persist,
@@ -927,10 +972,40 @@ async def run_turn(
     turn_index: int,
     pinned_node_ids: list[str] | None = None,
     force_risk_report: bool = False,
+    turn_id: str | None = None,
+    parent_turn_id: str | None = None,
 ) -> None:
     """Run one conversation turn through the graph. Drop-in replacement for
-    agent_native.run_turn — same SSE events and same Redis writes."""
-    pinned_node_ids = pinned_node_ids or []
+    agent_native.run_turn — same SSE events and same Redis writes.
+
+    Branching (Stage 2a): when `turn_id` is set (the API registered the turn in
+    the tree), the whole turn runs inside `conversations.turn_scope`, which makes
+    every state read path-scoped (root -> parent -> this turn; sibling branches
+    invisible), records every state delta per-turn, and stamps the tree
+    coordinates onto every SSE event. With `turn_id=None` (old call shape) the
+    behavior is exactly the pre-branching one."""
+    if turn_id is None:
+        await _run_turn_scoped(
+            conversation_id, user_message, turn_index,
+            pinned_node_ids or [], force_risk_report, None, None,
+        )
+        return
+    with conversations.turn_scope(conversation_id, turn_id, parent_turn_id):
+        await _run_turn_scoped(
+            conversation_id, user_message, turn_index,
+            pinned_node_ids or [], force_risk_report, turn_id, parent_turn_id,
+        )
+
+
+async def _run_turn_scoped(
+    conversation_id: str,
+    user_message: str,
+    turn_index: int,
+    pinned_node_ids: list[str],
+    force_risk_report: bool,
+    turn_id: str | None,
+    parent_turn_id: str | None,
+) -> None:
     await conversations.set_state(conversation_id, "running")
     await _emit(conversation_id, turn_index, "agent_started", input=user_message)
     tracing.log_event(
@@ -938,8 +1013,23 @@ async def run_turn(
         query=user_message, impl="graph",
     )
 
-    context = await conversations.get_context(conversation_id)
-    graph = await conversations.get_graph(conversation_id)
+    if turn_id is not None:
+        # Path-scoped context assembly: the prose digest comes from the PARENT
+        # turn's stored context_after (never a sibling's), and the graph is the
+        # accumulation along this turn's path. For a linear conversation both
+        # are byte-identical to the legacy global reads.
+        context = await conversations.resolve_prior_context(
+            conversation_id, parent_turn_id
+        )
+        path_graph = await conversations.get_path_graph(conversation_id, turn_id)
+        graph = (
+            path_graph["graph"] if path_graph is not None
+            else await conversations.get_graph(conversation_id)
+        )
+    else:
+        context = await conversations.get_context(conversation_id)
+        graph = await conversations.get_graph(conversation_id)
+    # Path-scoped automatically when the turn scope is active.
     state_doc = await conversations.get_state_doc(conversation_id)
     context_block = build_context_block(
         context, graph, pinned_node_ids, force_risk_report, state_doc
@@ -959,6 +1049,7 @@ async def run_turn(
         conversation_id, turn_index, user_message, context, context_block,
         persist=True, tool_names=tool_names, intent=turn_intent,
         pinned_node_ids=pinned_node_ids,
+        turn_id=turn_id, parent_turn_id=parent_turn_id,
     )
 
     try:
@@ -967,6 +1058,13 @@ async def run_turn(
         log.exception("turn_failed", extra={"conversation_id": conversation_id})
         await _emit(conversation_id, turn_index, "error", message=f"agent failed: {e}")
         await conversations.set_state(conversation_id, "error")
+        if turn_id is not None:
+            try:
+                await conversations.update_turn_entry(
+                    conversation_id, turn_id, status="error"
+                )
+            except Exception:
+                pass
         tracing.log_event("turn_failed", conversation_id=conversation_id, error=str(e))
 
 

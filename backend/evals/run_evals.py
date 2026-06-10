@@ -38,7 +38,7 @@ import time
 from typing import Any, Callable
 
 from app import agent_graph
-from evals import multiturn
+from evals import branching, multiturn
 
 # An evaluator takes the evaluate_turn output and returns (passed, comment).
 Evaluator = Callable[[dict[str, Any]], tuple[bool, str]]
@@ -1165,6 +1165,8 @@ async def _run_local() -> int:
     # turns in ONE conversation, persisting state_doc between turns exactly as
     # production does, then asserts later-turn recall WITHOUT re-running tools:
     # the Rosneft regression, the IMS invariant, and a faithful recap.
+    # Stage 2a: the branching (turn tree) checks — fork isolation, path graph
+    # accumulation, and the linear no-fork regression (see evals/branching.py).
     for nm, afn in (
         ("episodic_disabled", _episodic_disabled_rows),
         ("episodic_enabled_mock", _episodic_enabled_mock_rows),
@@ -1172,6 +1174,9 @@ async def _run_local() -> int:
         ("sanctioned_union", multiturn.sanctioned_union_rows),
         ("ims_invariant", multiturn.ims_invariant_rows),
         ("recap_multiturn", multiturn.recap_multiturn_rows),
+        ("branch_fork_isolation", branching.fork_isolation_rows),
+        ("branch_path_graph", branching.path_graph_rows),
+        ("branch_linear_regression", branching.linear_equivalence_rows),
     ):
         try:
             for r in await afn():
