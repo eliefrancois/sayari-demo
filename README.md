@@ -24,10 +24,3 @@ A request starts as an analyst prompt in the Next.js frontend, where a React Flo
 - **Session state:** Upstash Redis
 - **Hosting:** Cloud Run (backend), Vercel (frontend), DigitalOcean droplet (Neo4j)
 
-## Local dev
-
-See `backend/README.md` and `frontend/README.md`.
-
----
-
-*Built for the Sayari interview process. Not affiliated with Sayari.*
