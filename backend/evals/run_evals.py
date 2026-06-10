@@ -922,8 +922,12 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     )
 
     # (3b) Map routes: the same two shipments aggregate into ONE RUS->HKG
-    # country-pair route (count 2, summed value, dual_use carried through).
-    map_routes = sayari.shipments_to_routes([s_hs, s_native])
+    # country-pair route (count 2, summed value, dual_use carried through),
+    # and the lane names its top COUNTERPARTY (the buyer, since the subject is
+    # the supplier) so the map tooltip reads names, not bare ISO pairs.
+    map_routes = sayari.shipments_to_routes(
+        [s_hs, s_native], subject_id="sup-1", role="supplier"
+    )
     routes_ok = (
         len(map_routes) == 1
         and map_routes[0]["departure_country"] == "RUS"
@@ -932,6 +936,7 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
         and map_routes[0]["total_value"] == 350.0
         and map_routes[0]["dual_use"]
         and not map_routes[0]["sanctioned_party"]
+        and map_routes[0]["top_parties"] == ["HK Importer"]
     )
 
     # (4) Shortest path: sanctioned INTERMEDIATE -> flag; sanctioned TARGET only -> no flag.
@@ -1164,6 +1169,7 @@ async def _run_local() -> int:
         ("episodic_disabled", _episodic_disabled_rows),
         ("episodic_enabled_mock", _episodic_enabled_mock_rows),
         ("multiturn_recall", multiturn.multiturn_recall_rows),
+        ("sanctioned_union", multiturn.sanctioned_union_rows),
         ("ims_invariant", multiturn.ims_invariant_rows),
         ("recap_multiturn", multiturn.recap_multiturn_rows),
     ):

@@ -26,6 +26,17 @@ export interface TradeRoute {
   dual_use: boolean;
   sanctioned_party: boolean;
   hs_codes: string[];
+  // Top counterparty names on the lane (backend-aggregated, max 2). Optional
+  // in stored results: old conversations predate the field and just render
+  // country pairs.
+  top_parties: string[];
+}
+
+/** Whose trade the map is showing: one entry per (entity, role) trade query. */
+export interface TradeSubject {
+  entity_id: string;
+  name: string;
+  role: "supplier" | "buyer";
 }
 
 function isTradeRoute(r: unknown): r is TradeRoute {
@@ -40,7 +51,11 @@ function mergeInto(acc: Map<string, TradeRoute>, r: TradeRoute) {
   const key = `${r.departure_country}->${r.arrival_country}`;
   const prev = acc.get(key);
   if (!prev) {
-    acc.set(key, { ...r, hs_codes: [...(r.hs_codes ?? [])] });
+    acc.set(key, {
+      ...r,
+      hs_codes: [...(r.hs_codes ?? [])],
+      top_parties: [...(r.top_parties ?? [])],
+    });
     return;
   }
   prev.shipment_count += r.shipment_count;
@@ -49,6 +64,10 @@ function mergeInto(acc: Map<string, TradeRoute>, r: TradeRoute) {
   prev.sanctioned_party = prev.sanctioned_party || r.sanctioned_party;
   for (const c of r.hs_codes ?? []) {
     if (!prev.hs_codes.includes(c) && prev.hs_codes.length < 5) prev.hs_codes.push(c);
+  }
+  for (const p of r.top_parties ?? []) {
+    if (!prev.top_parties.includes(p) && prev.top_parties.length < 3)
+      prev.top_parties.push(p);
   }
 }
 
@@ -69,6 +88,10 @@ function routesFromToolCalls(turns: Turn[]): TradeRoute[] {
         dual_use: r.dual_use === true,
         sanctioned_party: r.sanctioned_party === true,
         hs_codes: Array.isArray(r.hs_codes) ? r.hs_codes.map(String) : [],
+        // Optional: results stored before the field existed simply lack it.
+        top_parties: Array.isArray(r.top_parties)
+          ? r.top_parties.map(String).slice(0, 3)
+          : [],
       }));
       const qkey = `${call.args?.entity_id ?? ""}|${call.args?.role ?? "supplier"}`;
       byQuery.set(qkey, routes);
@@ -106,9 +129,41 @@ function routesFromGraph(
       dual_use: p.dual_use === true,
       sanctioned_party: srcProps.sanctioned === true || tgtProps.sanctioned === true,
       hs_codes: Array.isArray(p.hs_codes) ? p.hs_codes.map(String).slice(0, 5) : [],
+      // The coarse fallback has no per-lane counterparty aggregation.
+      top_parties: [],
     });
   }
   return Array.from(acc.values());
+}
+
+/**
+ * Whose trade the map is showing: one subject per distinct (entity_id, role)
+ * sayari_trade query, latest name wins. The display name comes from the new
+ * backend `metadata.subject_name`; for results stored before that field
+ * existed we fall back to the graph node's name (the subject is a party on
+ * its own shipments, so it is on the graph), then a truncated id.
+ */
+export function collectTradeSubjects(
+  turns: Turn[],
+  nodes: Map<string, GraphNode>
+): TradeSubject[] {
+  const byQuery = new Map<string, TradeSubject>();
+  for (const turn of turns) {
+    for (const call of turn.toolCalls) {
+      if (call.tool !== "sayari_trade" || !call.hasResult) continue;
+      const meta = call.resultMeta as Record<string, unknown> | undefined;
+      if (!Array.isArray(meta?.routes)) continue;
+      const entityId = String(call.args?.entity_id ?? "");
+      if (!entityId) continue;
+      const role = call.args?.role === "buyer" ? "buyer" : "supplier";
+      const name =
+        (typeof meta?.subject_name === "string" && meta.subject_name) ||
+        nodes.get(entityId)?.name ||
+        `…${entityId.slice(-6)}`;
+      byQuery.set(`${entityId}|${role}`, { entity_id: entityId, name, role });
+    }
+  }
+  return Array.from(byQuery.values());
 }
 
 /**

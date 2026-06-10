@@ -212,6 +212,104 @@ async def multiturn_recall_rows() -> list[Row]:
     ]
 
 
+# --- Case 1b: sanctioned-enumeration union (ledger + registry) --------------
+
+
+async def sanctioned_union_rows() -> list[Row]:
+    """"Which subsidiaries were sanctioned?" must UNION two provenances: the
+    OpenSanctions verdict ledger (kind="sanctions") and Sayari-flagged registry
+    entities (kind="entities", sanctioned=true). The live regression: the agent
+    read only the ledger and omitted a refinery subsidiary that carries a Sayari
+    sanctioned flag but never passed through check_sanctions.
+
+    Turn 1 persists BOTH kinds of sanctioned finding: a CONFIRMED OpenSanctions
+    hit (lands in the ledger) and a traversed subsidiary whose sanctioned flag
+    comes from Sayari (lands ONLY in the registry). Asserts: (a) the registry
+    union surfaces both; (b) the Sayari-flagged subsidiary is NOT in the ledger
+    (the stores stay distinct — provenance split preserved, doc 09 discipline);
+    (c) the ledger output carries the deterministic hint steering the agent to
+    ALSO query kind="entities" so an enumeration self-corrects."""
+    case = "sanctioned_union"
+    conv = _Conversation()
+
+    confirmed_hit = SanctionsHit(
+        name_searched="Rosneft",
+        matched_name="Rosneft Trading S.A.",
+        lists=["OFAC SDN"],
+        sanctions_id="ofac-30947",
+        score=0.95,
+        on_watchlist=True,
+        countries=["ch"],
+    )
+    refinery_node = {
+        "id": "sayari-tuapse-refinery",
+        "name": "Tuapse Refinery LLC",
+        "label": "Entity",
+        "source_system": "sayari",
+        # Sanctioned per SAYARI risk factors — never adjudicated via
+        # check_sanctions, so it must NOT appear in the verdict ledger.
+        "properties": {"sanctioned": True, "pep": False, "countries": ["RUS"]},
+    }
+    state: dict[str, Any] = {
+        "turn_index": 1,
+        "user_message": "Map Rosneft's subsidiaries and their sanctions exposure.",
+        "intent": "ownership_analysis",
+        "pinned_node_ids": [],
+        "turn_nodes": [refinery_node],
+        "turn_leads": [],
+        "raw_strong_hits": [confirmed_hit.model_dump()],
+    }
+    answer = TurnAnswer(
+        answer=(
+            "Rosneft Trading S.A. is OFAC SDN-confirmed; Tuapse Refinery LLC "
+            "carries Sayari sanctioned risk factors."
+        ),
+        sanctions_hits=[confirmed_hit],  # CONFIRMED -> the ledger
+        referenced_node_ids=["sayari-tuapse-refinery"],
+        claims=[
+            Claim(
+                text="Rosneft Trading S.A. appears on the OFAC SDN list.",
+                source_refs=[SourceRef(source="opensanctions", sanctions_id="ofac-30947")],
+                confidence="high",
+            ),
+            Claim(
+                text="Tuapse Refinery LLC is flagged sanctioned by Sayari.",
+                source_refs=[SourceRef(source="sayari", sayari_entity_id="sayari-tuapse-refinery")],
+                confidence="high",
+            ),
+        ],
+    )
+    conv.finalize(state, summary=None, answer=answer)
+
+    async with _recall_against(conv.doc):
+        sanc = await recall_state_tool("c-union", kind="sanctions")
+        ents = await recall_state_tool("c-union", kind="entities", sanctioned=True)
+
+    # (a) The registry union surfaces BOTH provenances.
+    ent_ids = {r.get("id") for r in ents.get("items", [])}
+    union_complete = {"ofac-30947", "sayari-tuapse-refinery"}.issubset(ent_ids)
+
+    # (b) The stores stay distinct: the Sayari-flagged subsidiary never entered
+    # the ledger (provenance split preserved, the point of doc 09).
+    ledger_ids = {r.get("sanctions_id") for r in sanc.get("items", [])}
+    ledger_has_confirmed = "ofac-30947" in ledger_ids
+    stores_distinct = ledger_has_confirmed and "sayari-tuapse-refinery" not in ledger_ids
+
+    # (c) The ledger output hints at the registry remainder so the agent
+    # self-corrects an enumeration that started ledger-only.
+    note = sanc.get("note") or ""
+    hint_present = 'kind="entities"' in note and "sanctioned=true" in note
+
+    return [
+        (case, "union_surfaces_both_provenances", union_complete,
+         f"entity_ids={sorted(ent_ids)}"),
+        (case, "stores_stay_distinct", stores_distinct,
+         f"ledger_ids={sorted(str(i) for i in ledger_ids)}"),
+        (case, "ledger_hints_registry_remainder", hint_present,
+         f"note={note[:100]!r}"),
+    ]
+
+
 # --- Case 2: the IMS invariant (doc 09 §11) --------------------------------
 
 

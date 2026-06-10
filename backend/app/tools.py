@@ -347,8 +347,21 @@ async def sayari_trade_tool(
     nb = sayari.trade_to_neighborhood(kept, trade_edges, entity_id, role)
     # Country-pair routes for the frontend map. Aggregated over ALL fetched
     # shipments (same coverage as facets) and carried on `metadata` so they
-    # reach the UI via the existing tool_call_result event.
-    routes = sayari.shipments_to_routes(shipments)
+    # reach the UI via the existing tool_call_result event. subject_id/role let
+    # each lane name its top COUNTERPARTIES for the map tooltip.
+    routes = sayari.shipments_to_routes(shipments, subject_id=entity_id, role=role)
+    # The subject's display name, for the map's "whose trade is this" header.
+    # The queried entity appears as a party on its own shipments; old stored
+    # results simply lack the key (additive, backward compatible).
+    subject_name = next(
+        (
+            p.name
+            for s in shipments
+            for p in (s.supplier, s.buyer)
+            if p and p.entity_id == entity_id and p.name
+        ),
+        None,
+    )
 
     # Dual-use rollup with provenance kept distinct: hs_screen hits are OUR
     # curated BIS/E5 CHPL screen; bis_tags are Sayari's NATIVE risk factors.
@@ -384,7 +397,7 @@ async def sayari_trade_tool(
         "trade_edges": [e.model_dump() for e in trade_edges],
         "nodes": [n.model_dump() for n in nb.nodes],
         "edges": [e.model_dump() for e in nb.edges],
-        "metadata": {**nb.metadata, "routes": routes},
+        "metadata": {**nb.metadata, "routes": routes, "subject_name": subject_name},
     }
 
 
@@ -505,7 +518,33 @@ async def recall_state_tool(
         total = len(rows)
         if from_turn is not None:
             rows = [r for r in rows if r.get("from_turn") == from_turn]
-        return {"items": rows[:lim], "count": len(rows[:lim]), "total_in_state": total}
+        out: dict[str, Any] = {
+            "items": rows[:lim], "count": len(rows[:lim]), "total_in_state": total,
+        }
+        # Deterministic self-correction hint: this ledger holds only the
+        # adjudicated OpenSanctions verdicts. Registry entities that carry a
+        # sanctioned flag from OTHER provenance (e.g. Sayari risk factors on a
+        # traversed subsidiary) live in kind="entities" — an enumeration of
+        # "which X were sanctioned" that reads only this ledger under-counts.
+        ledger_ids = {r.get("sanctions_id") for r in (doc.get("sanctions_adjudicated") or [])}
+        registry_extra = [
+            r for r in (doc.get("entities") or {}).values()
+            if isinstance(r, dict)
+            and r.get("sanctioned")
+            and r.get("id") not in ledger_ids
+        ]
+        if registry_extra:
+            out["note"] = (
+                f"This ledger holds ONLY adjudicated OpenSanctions verdicts. "
+                f"{len(registry_extra)} more registry entit"
+                f"{'y carries' if len(registry_extra) == 1 else 'ies carry'} "
+                "sanctioned flags from other provenance (e.g. Sayari risk factors) "
+                "and are NOT listed here. For a complete 'which X were sanctioned' "
+                "enumeration, ALSO query recall_state(kind=\"entities\", "
+                "sanctioned=true) and present the two provenances separately "
+                "(OpenSanctions-confirmed vs Sayari-flagged)."
+            )
+        return out
 
     if kind == "entities":
         # The unified registry: the FULL connected-entity pool (ownership
@@ -1052,8 +1091,11 @@ TOOLS: list[dict[str, Any]] = [
             "Kinds: 'entities' = the UNIFIED registry of every connected entity you've "
             "touched (ownership/control neighbors, search leads, AND check_sanctions "
             "hits) in ONE id-keyed, rankable pool; 'leads' = full lead lists from earlier "
-            "sayari_search calls; 'sanctions' = adjudicated sanctions verdicts (confirmed "
-            "+ dismissed); 'claims' = your prior structured claims with their source_refs; "
+            "sayari_search calls; 'sanctions' = adjudicated OpenSanctions verdicts ONLY "
+            "(confirmed + dismissed) — for 'which X were sanctioned' enumerations query "
+            "BOTH 'sanctions' AND 'entities' with sanctioned=true and present the union "
+            "with the provenance split (OpenSanctions-confirmed vs Sayari-flagged); "
+            "'claims' = your prior structured claims with their source_refs; "
             "'resolved_entities' = legacy name-keyed resolved subjects. Use this to "
             "enumerate, filter, or RANK things you already found instead of re-searching. "
             "For a SUPERLATIVE / ranked question ('the most sanctioned connected entity', "

@@ -11,7 +11,7 @@ import {
 } from "react-simple-maps";
 
 import centroidsJson from "@/lib/map/country-centroids.json";
-import type { TradeRoute } from "@/lib/map/trade-routes";
+import type { TradeRoute, TradeSubject } from "@/lib/map/trade-routes";
 
 /**
  * Risky-routes world map (Tier 2). Country-level arcs departure -> arrival
@@ -58,7 +58,31 @@ function fmtValue(v: number | null): string {
 
 type HoverState = { route: TradeRoute; x: number; y: number } | null;
 
-export function TradeRoutesMap({ routes }: { routes: TradeRoute[] }) {
+function subjectLine(s: TradeSubject): string {
+  return s.role === "buyer" ? `${s.name} · imports (buyer)` : `${s.name} · exports (supplier)`;
+}
+
+/** "Subject → Counterparty" tooltip lead, direction-aware. With multiple
+ * subjects the merged lanes can't be attributed to one query, so we drop the
+ * subject and show counterparties alone. */
+function partiesLine(
+  route: TradeRoute,
+  subjects: TradeSubject[]
+): string | null {
+  if (route.top_parties.length === 0) return null;
+  const parties = route.top_parties.join(", ");
+  if (subjects.length !== 1) return `Counterparties: ${parties}`;
+  const s = subjects[0];
+  return s.role === "buyer" ? `${parties} → ${s.name}` : `${s.name} → ${parties}`;
+}
+
+export function TradeRoutesMap({
+  routes,
+  subjects = [],
+}: {
+  routes: TradeRoute[];
+  subjects?: TradeSubject[];
+}) {
   const [hover, setHover] = useState<HoverState>(null);
 
   // Arcs need both endpoints in the centroid table; domestic (dep === arr)
@@ -182,6 +206,20 @@ export function TradeRoutesMap({ routes }: { routes: TradeRoute[] }) {
         </ZoomableGroup>
       </ComposableMap>
 
+      {/* Subject header: whose trade these lanes belong to, and which direction. */}
+      {subjects.length > 0 && (
+        <div className="pointer-events-none absolute left-3 top-3 z-10 max-w-sm rounded-md border border-zinc-800 bg-zinc-900/85 px-2.5 py-1.5 text-[11px] shadow-lg backdrop-blur">
+          <div className="font-medium uppercase tracking-wider text-zinc-500">
+            Showing trade for
+          </div>
+          <div className="mt-0.5 flex flex-col gap-0.5 text-zinc-200">
+            {subjects.map((s) => (
+              <span key={`${s.entity_id}|${s.role}`}>{subjectLine(s)}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Legend (matches the graph panel's bottom-left convention). */}
       <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md border border-zinc-800 bg-zinc-900/85 px-2.5 py-1.5 text-[10px] shadow-lg backdrop-blur">
         <div className="mb-1 font-medium uppercase tracking-wider text-zinc-500">
@@ -221,6 +259,11 @@ export function TradeRoutesMap({ routes }: { routes: TradeRoute[] }) {
           <div className="font-medium text-zinc-100">
             {hover.route.departure_country} → {hover.route.arrival_country}
           </div>
+          {partiesLine(hover.route, subjects) && (
+            <div className="mt-0.5 text-zinc-200">
+              {partiesLine(hover.route, subjects)}
+            </div>
+          )}
           <div className="mt-1 text-zinc-300">
             {hover.route.shipment_count} shipment
             {hover.route.shipment_count === 1 ? "" : "s"} · {fmtValue(hover.route.total_value)}

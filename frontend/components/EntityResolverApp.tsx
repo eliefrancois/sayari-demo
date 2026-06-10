@@ -21,7 +21,7 @@ import {
   streamTurn,
   type TurnHandle,
 } from "@/lib/sse-client";
-import { collectTradeRoutes } from "@/lib/map/trade-routes";
+import { collectTradeRoutes, collectTradeSubjects } from "@/lib/map/trade-routes";
 import type { ExpandKind, NodeLabel } from "@/lib/types";
 
 /** Which lens the center panel shows: the React Flow graph or the routes map. */
@@ -48,6 +48,10 @@ export function EntityResolverApp() {
   const tradeRoutes = useMemo(
     () => collectTradeRoutes(state.turns, state.nodes, state.edges),
     [state.turns, state.nodes, state.edges]
+  );
+  const tradeSubjects = useMemo(
+    () => collectTradeSubjects(state.turns, state.nodes),
+    [state.turns, state.nodes]
   );
 
   const toggleLabel = useCallback((label: NodeLabel) => {
@@ -204,7 +208,7 @@ export function EntityResolverApp() {
           />
           {centerView === "map" && (
             <div className="absolute inset-0 z-10">
-              <TradeRoutesMap routes={tradeRoutes} />
+              <TradeRoutesMap routes={tradeRoutes} subjects={tradeSubjects} />
             </div>
           )}
           <ExpandToast message={expandToast} onDismiss={() => setExpandToast(null)} />

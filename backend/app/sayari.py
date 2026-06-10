@@ -848,9 +848,14 @@ def trade_facets(shipments: list[SayariShipment]) -> dict[str, Any]:
 
 
 _ROUTES_MAX = 40  # cap the routes array so a trade-heavy entity stays slim
+_ROUTE_PARTIES_MAX = 2  # top counterparty names kept per lane (payload stays slim)
 
 
-def shipments_to_routes(shipments: list[SayariShipment]) -> list[dict[str, Any]]:
+def shipments_to_routes(
+    shipments: list[SayariShipment],
+    subject_id: str | None = None,
+    role: str = "supplier",
+) -> list[dict[str, Any]]:
     """Aggregate shipments into country-pair routes for the frontend map.
 
     One entry per (departure, arrival) ISO-3 pair across ALL fetched shipments
@@ -861,8 +866,15 @@ def shipments_to_routes(shipments: list[SayariShipment]) -> list[dict[str, Any]]
     shipment record lacks a departure/arrival country. Routes ride the tool
     result `metadata` so they reach the UI on the existing tool_call_result
     event without a new channel.
+
+    `top_parties` names the lane's most frequent COUNTERPARTIES (the party
+    opposite the queried subject: buyers when role='supplier', suppliers when
+    role='buyer'), capped at _ROUTE_PARTIES_MAX so tooltips can read
+    "Mikron -> JXJ International Transportation" instead of bare ISO pairs.
+    Additive + optional: old stored results simply lack the key.
     """
     routes: dict[tuple[str, str], dict[str, Any]] = {}
+    party_counts: dict[tuple[str, str], dict[str, int]] = {}
     for s in shipments:
         dep = next(iter(s.departure_country), None) or (
             next(iter(s.supplier.countries), None) if s.supplier else None
@@ -877,6 +889,17 @@ def shipments_to_routes(shipments: list[SayariShipment]) -> list[dict[str, Any]]
             (s.supplier and s.supplier.sanctioned) or (s.buyer and s.buyer.sanctioned)
         )
         codes = [str(h.get("code")) for h in s.hs_codes if h.get("code")]
+        # The counterparty: whichever party is NOT the queried subject, falling
+        # back to the role's opposite when ids don't line up.
+        counterparty = s.buyer if role == "supplier" else s.supplier
+        if subject_id:
+            for p in (s.supplier, s.buyer):
+                if p and p.entity_id != subject_id:
+                    counterparty = p
+                    break
+        if counterparty and counterparty.name:
+            counts = party_counts.setdefault(key, {})
+            counts[counterparty.name] = counts.get(counterparty.name, 0) + 1
         r = routes.get(key)
         if r is None:
             routes[key] = {
@@ -897,6 +920,11 @@ def shipments_to_routes(shipments: list[SayariShipment]) -> list[dict[str, Any]]
         for c in codes:
             if c not in r["hs_codes"] and len(r["hs_codes"]) < 5:
                 r["hs_codes"].append(c)
+    for key, r in routes.items():
+        counts = party_counts.get(key) or {}
+        r["top_parties"] = [
+            name for name, _ in sorted(counts.items(), key=lambda kv: -kv[1])
+        ][:_ROUTE_PARTIES_MAX]
     out = sorted(
         routes.values(),
         key=lambda r: (r["total_value"] or 0.0, r["shipment_count"]),

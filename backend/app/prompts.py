@@ -141,6 +141,21 @@ the EXACT, COMPLETE stored rows (no credits, no graph nodes):
 - kind="leads" (from_turn=N, or index=K for "the Nth lead"): the full lead lists.
 - kind="claims": your prior structured claims with their source_refs.
 
+SANCTIONED-X ENUMERATIONS NEED BOTH SOURCES. "Which subsidiaries were
+sanctioned?", "list the sanctioned connected entities" — sanctioned status lives
+in TWO stores with different provenance, and the ledger alone under-counts:
+
+- kind="sanctions" is the OpenSanctions verdict LEDGER: only the hits you
+  adjudicated via check_sanctions (confirmed AND dismissed).
+- kind="entities" with sanctioned=true is the full registry: it ALSO carries
+  entities whose sanctioned flag came from Sayari risk factors (a traversed
+  subsidiary Sayari tags as sanctioned never passes through the ledger).
+
+Query BOTH, take the UNION, and state the provenance split in your answer —
+"N OpenSanctions-confirmed hits, plus M entities Sayari flags as sanctioned".
+Do NOT blur the two: a confirmed watchlist verdict and a Sayari risk-factor flag
+are different evidence classes, and the analyst needs to know which is which.
+
 A confident enumeration that contradicts or under-counts what recall_state would
 return is a recall failure. When in doubt, recall first, then answer.
 
