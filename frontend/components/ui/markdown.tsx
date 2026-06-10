@@ -1,10 +1,37 @@
 import { cn } from "@/lib/utils"
+import type { EntityMatch } from "@/lib/entity-lookup"
 import { marked } from "marked"
-import { memo, useId, useMemo } from "react"
+import { createContext, memo, useContext, useId, useMemo } from "react"
 import ReactMarkdown, { Components } from "react-markdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 import { CodeBlock, CodeBlockCode } from "./code-block"
+
+/**
+ * Wires bolded entity names in agent markdown to the evidence graph + detail
+ * panel. Provided once near the app root (EntityResolverApp); the strong
+ * renderer below consults it. Null context (or no match) = plain bold, so the
+ * markdown component stays drop-in everywhere else.
+ */
+export type EntityInteraction = {
+  /** Normalized known-entity lookup; null when the text isn't a known entity. */
+  lookup: (name: string) => EntityMatch | null
+  /** Click: highlight/center the node and open the right-hand detail panel. */
+  onEntityClick: (match: EntityMatch) => void
+}
+
+export const EntityInteractionContext = createContext<EntityInteraction | null>(
+  null
+)
+
+/** Flatten a strong element's children to plain text (entity names are plain). */
+function childrenToText(children: React.ReactNode): string {
+  if (typeof children === "string") return children
+  if (Array.isArray(children)) {
+    return children.every((c) => typeof c === "string") ? children.join("") : ""
+  }
+  return ""
+}
 
 export type MarkdownProps = {
   children: string
@@ -163,6 +190,27 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   },
   strong: function Strong({ node, className, children, ...props }) {
     void node
+    const interaction = useContext(EntityInteractionContext)
+    const text = childrenToText(children)
+    const match = interaction && text ? interaction.lookup(text) : null
+    if (interaction && match) {
+      return (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            interaction.onEntityClick(match)
+          }}
+          title={`Show ${match.name} on the graph and open its details`}
+          className={cn(
+            "cursor-pointer font-semibold text-foreground underline decoration-foreground/35 decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground hover:decoration-solid",
+            className
+          )}
+        >
+          {children}
+        </button>
+      )
+    }
     return (
       <strong className={cn("font-semibold text-foreground", className)} {...props}>
         {children}

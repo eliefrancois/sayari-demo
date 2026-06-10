@@ -92,6 +92,18 @@ export interface FollowupSuggestion {
   reason: string;
 }
 
+/**
+ * A full investigative follow-up QUESTION (mirrors backend
+ * schema.SuggestedQuestion). Distinct from FollowupSuggestion (entity names):
+ * a question is grounded in what the turn surfaced and what remains
+ * unexplored. Rendered as the primary FOLLOW UP chips; clicking sends the
+ * question verbatim. Optional everywhere for stored pre-schema conversations.
+ */
+export interface SuggestedQuestion {
+  question: string;
+  rationale: string;
+}
+
 export type SayariRiskLevel = "critical" | "high" | "elevated" | "relevant";
 
 /** A slimmed Sayari risk factor (mirrors backend schema.SayariRiskFactor). */
@@ -135,6 +147,8 @@ export interface RiskSummary {
   investigation_summary: string;
   tools_used: string[];
   suggested_followups: FollowupSuggestion[];
+  /** Context-aware follow-up questions. Absent on pre-schema stored summaries. */
+  suggested_questions?: SuggestedQuestion[];
   sayari_risk_factors?: SayariRiskFactor[];
   clarifying_questions?: string[];
 }
@@ -160,6 +174,8 @@ export interface TurnAnswer {
   report_ready?: boolean;
   sanctions_hits: SanctionsHit[];
   suggested_followups: FollowupSuggestion[];
+  /** Context-aware follow-up questions. Absent on pre-schema stored answers. */
+  suggested_questions?: SuggestedQuestion[];
   sayari_risk_factors?: SayariRiskFactor[];
   tools_used: string[];
 }
@@ -280,6 +296,36 @@ export interface ConversationListItem {
   state: string;
 }
 
+/**
+ * One entry in the backend's unified id-keyed entity registry (the IMS Phase B
+ * projection in conversations._project_entities). The hydrate payload ships it
+ * under `state_doc.entities`; the frontend uses it for composer autocomplete
+ * and the entity detail panel. All fields optional — the projection merges
+ * heterogeneous sources and older docs may carry sparser records.
+ */
+export interface RegistryEntity {
+  label?: string | null;
+  type?: string | null;
+  sanctioned?: boolean | null;
+  pep?: boolean | null;
+  is_sdn?: boolean | null;
+  countries?: string[] | null;
+  sanctions_lists?: string[] | null;
+  source?: string | null;
+  confidence?: string | null;
+  first_seen_turn?: number | null;
+  last_seen_turn?: number | null;
+  source_refs?: {
+    source?: string;
+    node_id?: string | null;
+    sanctions_id?: string | null;
+    sayari_entity_id?: string | null;
+    leak?: string | null;
+    lists?: string[];
+    risk_factor?: string | null;
+  }[];
+}
+
 /** Payload from GET /conversations/{id} — used to restore on page reload. */
 export interface ConversationHydrate {
   conversation_id: string;
@@ -289,6 +335,8 @@ export interface ConversationHydrate {
   turns: { turn_index: number; kind: string; user_message: string; entity_name?: string; offer_risk_report?: boolean }[];
   summaries: RiskSummary[];
   answers: TurnAnswer[];
+  /** Structured investigation state; `entities` is the unified registry. */
+  state_doc?: { entities?: Record<string, RegistryEntity> } & Record<string, unknown>;
   /** Turn tree (stage 2a). Empty/absent for pre-branching conversations. */
   tree?: TreeTurn[];
 }

@@ -137,6 +137,7 @@ function TurnNodeComponent({ data }: NodeProps<TurnFlowNode>) {
               summary={turn.summary}
               nodesById={nodesById}
               onFollowup={(name) => onSendFrom(turn, `Investigate ${name}`)}
+              onAskQuestion={(question) => onSendFrom(turn, question)}
               onHighlightNodes={onHighlightNodes}
               onClearHighlight={onClearHighlight}
               onFocusNode={onFocusNode}

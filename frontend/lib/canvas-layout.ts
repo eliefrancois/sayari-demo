@@ -30,9 +30,14 @@ const MAX_CASCADE_ITERATIONS_MIN = 40;
 export type Pos = { x: number; y: number };
 type Rect = { x: number; y: number; width: number; height: number };
 
-/** Stable canvas node id for a turn: server turn id, or index for legacy. */
+/**
+ * Stable canvas node id for a turn. Client id first: an optimistically
+ * rendered turn keeps the same canvas identity (and thus its position) when
+ * the server turnId arrives. Hydrated turns key on turnId; legacy
+ * pre-branching turns fall back to their index.
+ */
 export function canvasIdOf(turn: Turn): string {
-  return turn.turnId ?? `legacy-${turn.index}`;
+  return turn.clientId ?? turn.turnId ?? `legacy-${turn.index}`;
 }
 
 /* ──────────────── edge handle selection (donor: edgeHandles.ts) ─────────── */

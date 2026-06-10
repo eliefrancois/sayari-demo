@@ -370,6 +370,12 @@ Call submit_answer. Key fields:
 - sayari_risk_factors: notable Sayari factors surfaced (same shape as in
   submit_summary; keep traversal `path` so the UI highlights the chain).
 - sanctions_hits: only confirmed watchlist hits relevant to the answer.
+- suggested_questions: 2-3 FULL investigative questions the analyst would
+  naturally ask next, each grounded in what THIS turn surfaced and what remains
+  unexplored (e.g. "Does the UBO chain pass through any OFAC SDN entity?",
+  "Are any of the Cyprus subsidiaries on the BIS Entity List?"). These are
+  QUESTIONS, not entity names — entity names go in suggested_followups. Each
+  has a one-sentence `rationale`. Skip only when the turn is a pure greeting.
 - referenced_node_ids, clarification_questions, suggested_followups, tools_used.
 
 ## How to finish with submit_summary (explicit report only)
@@ -399,6 +405,10 @@ Call submit_summary with a complete RiskSummary. The fields:
   co-officers, and connected entities that surfaced as interesting (especially
   sanctioned/state-owned ones). Empty list is acceptable if nothing else is worth
   investigating.
+- suggested_questions: 2-3 FULL investigative questions the analyst would
+  naturally ask next, grounded in what this report surfaced and what remains
+  unexplored (e.g. "Does the UBO chain pass through any OFAC SDN entity?").
+  Questions, not entity names; each carries a one-sentence `rationale`.
 """
 
 
@@ -528,6 +538,28 @@ SUBMIT_SUMMARY_TOOL = {
                         },
                     },
                     "required": ["name", "reason"],
+                },
+            },
+            "suggested_questions": {
+                "type": "array",
+                "description": (
+                    "2-3 FULL investigative follow-up QUESTIONS (not entity names), each "
+                    "grounded in what this report surfaced and what remains unexplored, "
+                    "e.g. 'Does the UBO chain pass through any OFAC SDN entity?'."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "The full question, ready to send as the next message.",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": "One sentence on why this question matters now.",
+                        },
+                    },
+                    "required": ["question", "rationale"],
                 },
             },
             "sayari_risk_factors": {
@@ -693,6 +725,29 @@ SUBMIT_ANSWER_TOOL = {
                         "reason": {"type": "string"},
                     },
                     "required": ["name", "reason"],
+                },
+            },
+            "suggested_questions": {
+                "type": "array",
+                "description": (
+                    "2-3 FULL investigative follow-up QUESTIONS (not entity names), each "
+                    "grounded in what THIS turn surfaced and what remains unexplored, e.g. "
+                    "'Does the UBO chain pass through any OFAC SDN entity?'. Empty only "
+                    "for pure greetings."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "The full question, ready to send as the next message.",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": "One sentence on why this question matters now.",
+                        },
+                    },
+                    "required": ["question", "rationale"],
                 },
             },
             "sayari_risk_factors": {

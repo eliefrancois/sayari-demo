@@ -2,11 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { PanelLeft, RotateCcw, Undo2 } from "lucide-react";
+import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
+import { EntityDetailPanel, type EntityRelationship } from "./EntityDetailPanel";
 import { ExpandToast } from "./ExpandToast";
 import { GraphPanel } from "./GraphPanel";
 import { TradeRoutesMap } from "./TradeRoutesMap";
 import { InvestigationCanvas } from "./canvas/InvestigationCanvas";
 import { ConversationManager } from "./manager/ConversationManager";
+import { EntityInteractionContext } from "./ui/markdown";
+import {
+  buildEntityLookup,
+  matchEntity,
+  normalizeEntityName,
+  type EntityMatch,
+} from "@/lib/entity-lookup";
 import {
   countExpandDelta,
   edgeKey,
@@ -34,6 +43,14 @@ type CenterView = "graph" | "map";
 
 /** localStorage key for resuming the conversation across reloads. */
 const CONVERSATION_KEY = "err:conversation_id";
+
+/**
+ * localStorage key for the canvas/graph split ratio. Persistence is applied
+ * imperatively after mount (panel ref resize) rather than via useDefaultLayout
+ * so server and first client render agree — reading localStorage during render
+ * would cause a hydration mismatch.
+ */
+const PANEL_LAYOUT_KEY = "err:panel-split";
 
 /**
  * The evidence graph regenerated to a selected turn's path-accumulated state
@@ -71,11 +88,45 @@ export function EntityResolverApp() {
   const [centerView, setCenterView] = useState<CenterView>("graph");
   const [scoped, setScoped] = useState<ScopedGraph | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
+  // Entity clicked in answer/summary markdown — drives the right-hand detail
+  // slide-over (item: clickable entities). Null = closed.
+  const [detailEntity, setDetailEntity] = useState<EntityMatch | null>(null);
   // Bumped when the workspace is replaced wholesale (switch / new / delete) so
   // the tree canvas remounts and lays out fresh, exactly like a page reload.
   // Live turns and the mount-time resume hydrate keep the same canvas instance.
   const [canvasEpoch, setCanvasEpoch] = useState(0);
   const scopeTickRef = useRef(0);
+
+  // Canvas/graph split ratio, persisted to localStorage across reloads.
+  // Applied after mount (hydration-safe), saved on every drag. The Group
+  // fires onLayoutChanged with the DEFAULT split during mount, before the
+  // restore effect below runs — persisting that first call would clobber the
+  // saved ratio with 40/60 on every reload, so writes are gated until the
+  // restore has happened.
+  const investigationPanelRef = usePanelRef();
+  const layoutRestoredRef = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PANEL_LAYOUT_KEY);
+      if (raw) {
+        const pct = (JSON.parse(raw) as Record<string, number>).investigation;
+        if (typeof pct === "number" && pct >= 24 && pct <= 70) {
+          investigationPanelRef.current?.resize(`${pct}%`);
+        }
+      }
+    } catch {
+      // corrupt entry: fall back to the default split
+    }
+    layoutRestoredRef.current = true;
+  }, [investigationPanelRef]);
+  const persistLayout = useCallback((layout: Record<string, number>) => {
+    if (!layoutRestoredRef.current) return;
+    try {
+      localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(layout));
+    } catch {
+      // storage full/unavailable: split simply won't persist
+    }
+  }, []);
 
   // Resume the last conversation on reload: hydrate restores turns + the
   // merged graph, and the tree (stage 2a) restores branch structure. Old
@@ -131,6 +182,27 @@ export function EntityResolverApp() {
       handleRef.current?.close();
       handleRef.current = null;
 
+      // Optimistic render: the user's turn card appears the instant they hit
+      // send — BEFORE createConversation / POST /messages (several serial
+      // Upstash round-trips server-side). The provisional turn carries a
+      // stable clientId; the canvas keys its position on that id, so when
+      // the server identity arrives via turn_resolved nothing jumps.
+      const pinned = Array.from(state.pinnedNodeIds);
+      const forceRiskReport = opts?.forceRiskReport ?? false;
+      const clientId = `pending:${
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : Math.random().toString(36).slice(2)
+      }`;
+      dispatch({
+        type: "turn_pending",
+        clientId,
+        parentTurnId,
+        userMessage: text,
+        pinnedNodeIds: pinned,
+        forceRiskReport,
+      });
+
       try {
         let cid = state.conversationId;
         if (!cid) {
@@ -139,8 +211,6 @@ export function EntityResolverApp() {
           dispatch({ type: "conversation_created", conversationId: cid });
         }
 
-        const pinned = Array.from(state.pinnedNodeIds);
-        const forceRiskReport = opts?.forceRiskReport ?? false;
         const { turnIndex, eventCursor, turnId, parentTurnId: resolvedParent } =
           await sendMessageApi(cid, text, {
             pinnedNodeIds: pinned,
@@ -149,22 +219,35 @@ export function EntityResolverApp() {
           });
 
         dispatch({
-          type: "turn_sent",
+          type: "turn_resolved",
+          clientId,
           turnIndex,
           turnId,
-          // The server resolves the actual parent (the current head when we
-          // omitted one) — store its answer, not our request.
           parentTurnId: resolvedParent,
-          userMessage: text,
-          pinnedNodeIds: pinned,
-          forceRiskReport,
         });
 
+        const convId = cid;
         handleRef.current = streamTurn(cid, eventCursor, {
           onEvent: (evt) => dispatch({ type: "event", event: evt }),
-          onClose: (reason) => dispatch({ type: "closed", reason }),
+          onClose: (reason) => {
+            dispatch({ type: "closed", reason });
+            // Refresh the entity registry once the turn lands so the
+            // composer autocomplete and entity detail panel see what this
+            // turn surfaced (the registry otherwise only loads on hydrate).
+            if (reason === "done") {
+              fetchConversation(convId)
+                .then((p) =>
+                  dispatch({ type: "registry", entities: p.state_doc?.entities ?? {} })
+                )
+                .catch(() => {
+                  /* best-effort refresh; the next hydrate catches up */
+                });
+            }
+          },
         });
       } catch (err) {
+        // The fatal path marks the provisional (last) turn failed, so the
+        // optimistic card lands in the error state instead of stranding.
         dispatch({
           type: "fatal",
           message: err instanceof Error ? err.message : "unknown error sending message",
@@ -189,6 +272,7 @@ export function EntityResolverApp() {
     handleRef.current = null;
     setCenterView("graph");
     setScoped(null);
+    setDetailEntity(null);
     localStorage.removeItem(CONVERSATION_KEY);
     setCanvasEpoch((n) => n + 1);
     dispatch({ type: "reset" });
@@ -214,6 +298,7 @@ export function EntityResolverApp() {
           localStorage.setItem(CONVERSATION_KEY, cid);
           setCenterView("graph");
           setScoped(null);
+          setDetailEntity(null);
           setCanvasEpoch((n) => n + 1);
           dispatch({ type: "hydrate", payload });
         })
@@ -323,6 +408,96 @@ export function EntityResolverApp() {
     dispatch({ type: "toggle_leads_overlay" });
   }, []);
 
+  /* ── clickable entities: known-entity lookup + right-hand detail panel ── */
+
+  const entityLookupMap = useMemo(
+    () => buildEntityLookup(state.nodes, state.registry),
+    [state.nodes, state.registry]
+  );
+  const lookupEntity = useCallback(
+    (name: string) => matchEntity(entityLookupMap, name),
+    [entityLookupMap]
+  );
+  const openEntityDetail = useCallback(
+    (match: EntityMatch) => {
+      // Highlight + center the node when the entity is on the graph;
+      // registry-only entities just open the panel.
+      if (match.nodeId) dispatch({ type: "focus_node", nodeId: match.nodeId });
+      setDetailEntity(match);
+    },
+    []
+  );
+  const openEntityByName = useCallback(
+    (name: string) => {
+      const match = lookupEntity(name);
+      if (match) openEntityDetail(match);
+    },
+    [lookupEntity, openEntityDetail]
+  );
+  // Right-click "Open detail view": open the same right-hand panel the
+  // click-to-open path uses, built from the graph node directly.
+  const openNodeDetail = useCallback(
+    (nodeId: string) => {
+      const node = state.nodes.get(nodeId);
+      openEntityDetail({ name: node?.name ?? nodeId, nodeId });
+    },
+    [state.nodes, openEntityDetail]
+  );
+  const entityInteraction = useMemo(
+    () => ({ lookup: lookupEntity, onEntityClick: openEntityDetail }),
+    [lookupEntity, openEntityDetail]
+  );
+
+  // Index graph nodes by normalized name so an entity opened from prose (which
+  // may carry only a registry id) still resolves to its on-graph node and shows
+  // the same relationship list as a graph-pinned node (issue 5).
+  const nodeIdByName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const node of state.nodes.values()) {
+      const key = normalizeEntityName(node.name);
+      if (key && !map.has(key)) map.set(key, node.id);
+    }
+    return map;
+  }, [state.nodes]);
+
+  // Resolve the open entity against live state on every render so the panel
+  // tracks graph growth (e.g. relationships streaming in mid-turn).
+  const detailData = useMemo(() => {
+    if (!detailEntity) return null;
+    // Prefer the match's own node id; fall back to matching the entity's name
+    // against the graph so a prose-opened entity that IS on the canvas (under a
+    // different id linkage) still mirrors its connections.
+    const resolvedNodeId =
+      (detailEntity.nodeId && state.nodes.has(detailEntity.nodeId)
+        ? detailEntity.nodeId
+        : nodeIdByName.get(normalizeEntityName(detailEntity.name))) ?? null;
+    const node = resolvedNodeId ? state.nodes.get(resolvedNodeId) ?? null : null;
+    const registryEntry =
+      (detailEntity.registryId ? state.registry.get(detailEntity.registryId) : undefined) ??
+      (detailEntity.nodeId ? state.registry.get(detailEntity.nodeId) : undefined) ??
+      (resolvedNodeId ? state.registry.get(resolvedNodeId) : undefined) ??
+      null;
+    const relationships: EntityRelationship[] = [];
+    if (resolvedNodeId) {
+      for (const edge of state.edges.values()) {
+        if (relationships.length >= 14) break;
+        const out = edge.source === resolvedNodeId;
+        const inn = edge.target === resolvedNodeId;
+        if (!out && !inn) continue;
+        const otherId = out ? edge.target : edge.source;
+        const other = state.nodes.get(otherId);
+        if (!other) continue;
+        relationships.push({
+          type: edge.type,
+          direction: out ? "out" : "in",
+          otherId,
+          otherName: other.name,
+        });
+      }
+    }
+    return { match: detailEntity, node, registryEntry, relationships };
+  }, [detailEntity, state.nodes, state.edges, state.registry, nodeIdByName]);
+
   // Live mode renders the merged conversation graph; time travel swaps in the
   // selected turn's path-accumulated graph (sibling branches excluded).
   const liveNodes = useMemo(() => Array.from(state.nodes.values()), [state.nodes]);
@@ -334,94 +509,139 @@ export function EntityResolverApp() {
     : null;
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
-      <AppHeader
-        state={state}
-        onReset={newInvestigation}
-        onToggleHistory={() => setManagerOpen((o) => !o)}
-        historyOpen={managerOpen}
-      />
+    <EntityInteractionContext.Provider value={entityInteraction}>
+      <div className="flex h-screen flex-col bg-background text-foreground">
+        <AppHeader
+          state={state}
+          onReset={newInvestigation}
+          onToggleHistory={() => setManagerOpen((o) => !o)}
+          historyOpen={managerOpen}
+        />
 
-      <ConversationManager
-        open={managerOpen}
-        onClose={() => setManagerOpen(false)}
-        activeConversationId={state.conversationId}
-        isRunning={isRunning}
-        onSelect={switchConversation}
-        onNewInvestigation={newInvestigation}
-        onDeleted={onConversationDeleted}
-      />
+        <ConversationManager
+          open={managerOpen}
+          onClose={() => setManagerOpen(false)}
+          activeConversationId={state.conversationId}
+          isRunning={isRunning}
+          onSelect={switchConversation}
+          onNewInvestigation={newInvestigation}
+          onDeleted={onConversationDeleted}
+        />
 
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(420px,40%)_1fr]">
-        {/* Left: INVESTIGATION — the branching turn canvas */}
-        <aside className="flex min-h-0 flex-col border-r border-border">
-          <InvestigationCanvas
-            key={canvasEpoch}
-            state={state}
-            disabled={isRunning}
-            onSendFrom={onSendFrom}
-            onSelectTurn={selectTurn}
-            onHighlightNodes={highlightNodes}
-            onClearHighlight={clearHighlight}
-            onFocusNode={focusNode}
-            onTogglePin={togglePin}
+        {/* User-adjustable canvas/graph split; the ratio persists to
+            localStorage (applied post-mount, saved on drag). React Flow
+            observes its container, so both panes relayout live while the
+            handle drags. */}
+        <Group
+          orientation="horizontal"
+          onLayoutChanged={persistLayout}
+          className="min-h-0 flex-1"
+        >
+          {/* Left: INVESTIGATION — the branching turn canvas */}
+          <Panel
+            id="investigation"
+            panelRef={investigationPanelRef}
+            defaultSize="40%"
+            minSize="24%"
+            className="flex min-h-0"
+            style={{ overflow: "hidden" }}
+          >
+            <aside className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <InvestigationCanvas
+                key={canvasEpoch}
+                state={state}
+                disabled={isRunning}
+                onSendFrom={onSendFrom}
+                onSelectTurn={selectTurn}
+                onHighlightNodes={highlightNodes}
+                onClearHighlight={clearHighlight}
+                onFocusNode={focusNode}
+                onTogglePin={togglePin}
+              />
+            </aside>
+          </Panel>
+
+          {/* 1px visual hairline; the library widens the actual hit target
+              (resizeTargetMinimumSize) so the thin line stays grabbable. */}
+          <Separator
+            title="Drag to resize panels"
+            className="w-px bg-border outline-none transition-colors data-[separator=active]:bg-foreground/50 data-[separator=focus]:bg-foreground/30 data-[separator=hover]:bg-foreground/30"
           />
-        </aside>
 
-        {/* Right: EVIDENCE GRAPH — graph with a map lens for trade routes */}
-        <main className="relative flex min-h-0 flex-col">
-          <EvidencePaneHeader
-            nodeCount={graphNodes.length}
-            edgeCount={graphEdges.length}
-            hiddenLabels={hiddenLabels}
-            onToggleLabel={toggleLabel}
-            view={centerView}
-            onViewChange={setCenterView}
-            routeCount={tradeRoutes.length}
-            scopeLabel={
-              scoped
-                ? `as of turn ${String(scoped.turnIndex + 1).padStart(2, "0")} on this path`
-                : null
-            }
-            onBackToLive={scoped ? () => selectTurn(null) : undefined}
-          />
-          <div className="relative min-h-0 flex-1">
-            {/* GraphPanel stays mounted under the map so the force layout and
-                user-dragged positions survive flipping lenses. */}
-            <GraphPanel
-              nodes={graphNodes}
-              edges={graphEdges}
-              highlightedNodeIds={state.highlightedNodeIds}
-              pinnedNodeIds={state.pinnedNodeIds}
-              focusRequest={state.focusRequest}
-              hiddenLabels={hiddenLabels}
-              onExpandNode={handleExpand}
-              onTogglePin={togglePin}
-              leadsShown={scoped ? undefined : state.latestSearchMeta?.shown}
-              leadsTotal={scoped ? undefined : state.latestSearchMeta?.total}
-              overlayLeadNodes={scoped ? [] : state.unpinnedLeadNodes}
-              showOverlayLeads={scoped ? false : state.showUnpinnedLeads}
-              onToggleLeads={toggleLeadsOverlay}
-              scopedDelta={scopedDelta}
-            />
-            {centerView === "map" && (
-              <div className="absolute inset-0 z-10">
-                <TradeRoutesMap routes={tradeRoutes} subjects={tradeSubjects} />
-                {/* Path-scoping the map isn't cheap (routes derive from
-                    per-turn tool metadata) — the map stays on live-head data
-                    and says so while time-traveling. */}
-                {scoped && (
-                  <div className="pointer-events-none absolute left-3 top-3 z-20 rounded-md border border-border bg-card px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground shadow-sm">
-                    map shows live data (not path-scoped)
+          {/* Right: EVIDENCE GRAPH — graph with a map lens for trade routes */}
+          <Panel
+            id="evidence"
+            minSize="30%"
+            className="flex min-h-0"
+            style={{ overflow: "hidden" }}
+          >
+            <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+              <EvidencePaneHeader
+                nodeCount={graphNodes.length}
+                edgeCount={graphEdges.length}
+                hiddenLabels={hiddenLabels}
+                onToggleLabel={toggleLabel}
+                view={centerView}
+                onViewChange={setCenterView}
+                routeCount={tradeRoutes.length}
+                scopeLabel={
+                  scoped
+                    ? `as of turn ${String(scoped.turnIndex + 1).padStart(2, "0")} on this path`
+                    : null
+                }
+                onBackToLive={scoped ? () => selectTurn(null) : undefined}
+              />
+              <div className="relative min-h-0 flex-1">
+                {/* GraphPanel stays mounted under the map so the force layout and
+                    user-dragged positions survive flipping lenses. */}
+                <GraphPanel
+                  nodes={graphNodes}
+                  edges={graphEdges}
+                  highlightedNodeIds={state.highlightedNodeIds}
+                  pinnedNodeIds={state.pinnedNodeIds}
+                  focusRequest={state.focusRequest}
+                  hiddenLabels={hiddenLabels}
+                  onExpandNode={handleExpand}
+                  onTogglePin={togglePin}
+                  onOpenDetail={openNodeDetail}
+                  leadsShown={scoped ? undefined : state.latestSearchMeta?.shown}
+                  leadsTotal={scoped ? undefined : state.latestSearchMeta?.total}
+                  overlayLeadNodes={scoped ? [] : state.unpinnedLeadNodes}
+                  showOverlayLeads={scoped ? false : state.showUnpinnedLeads}
+                  onToggleLeads={toggleLeadsOverlay}
+                  scopedDelta={scopedDelta}
+                />
+                {centerView === "map" && (
+                  <div className="absolute inset-0 z-10">
+                    <TradeRoutesMap routes={tradeRoutes} subjects={tradeSubjects} />
+                    {/* Path-scoping the map isn't cheap (routes derive from
+                        per-turn tool metadata) — the map stays on live-head data
+                        and says so while time-traveling. */}
+                    {scoped && (
+                      <div className="pointer-events-none absolute left-3 top-3 z-20 rounded-md border border-border bg-card px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground shadow-sm">
+                        map shows live data (not path-scoped)
+                      </div>
+                    )}
                   </div>
                 )}
+                <ExpandToast message={expandToast} onDismiss={() => setExpandToast(null)} />
+                {detailData && (
+                  <EntityDetailPanel
+                    name={detailData.match.name}
+                    node={detailData.node}
+                    registryEntry={detailData.registryEntry}
+                    relationships={detailData.relationships}
+                    onClose={() => setDetailEntity(null)}
+                    onFocusNode={focusNode}
+                    onOpenEntity={openEntityByName}
+                  />
+                )}
               </div>
-            )}
-            <ExpandToast message={expandToast} onDismiss={() => setExpandToast(null)} />
-          </div>
-        </main>
+            </main>
+          </Panel>
+        </Group>
       </div>
-    </div>
+    </EntityInteractionContext.Provider>
   );
 }
 

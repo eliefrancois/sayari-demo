@@ -296,6 +296,19 @@ class FollowupSuggestion(BaseModel):
     reason: str  # one-sentence rationale shown on hover
 
 
+class SuggestedQuestion(BaseModel):
+    """A full investigative follow-up QUESTION (not an entity name).
+
+    Distinct from FollowupSuggestion: a question is grounded in what THIS turn
+    surfaced and what remains unexplored ("Does the UBO chain pass through any
+    OFAC SDN entity?"). The frontend renders these as the primary follow-up
+    chips; clicking one sends the question verbatim as the next message.
+    """
+
+    question: str  # the full question, ready to send as the next turn
+    rationale: str  # one-sentence why-this-matters, shown on hover
+
+
 class RiskSummary(BaseModel):
     """Final structured output of an investigation. The agent must return this shape."""
 
@@ -308,6 +321,9 @@ class RiskSummary(BaseModel):
     investigation_summary: str
     tools_used: list[str]
     suggested_followups: list[FollowupSuggestion] = Field(default_factory=list)
+    # 2-3 context-aware follow-up QUESTIONS (additive; old stored summaries
+    # simply have an empty list here).
+    suggested_questions: list[SuggestedQuestion] = Field(default_factory=list)
     # Sayari risk factors the agent chose to surface (slimmed; see
     # slim_sayari_profile). Rendered grouped by level in the UI; each factor's
     # `path` highlights its ownership/control chain on the graph.
@@ -340,6 +356,9 @@ class TurnAnswer(BaseModel):
     report_ready: bool = False
     sanctions_hits: list[SanctionsHit] = Field(default_factory=list)
     suggested_followups: list[FollowupSuggestion] = Field(default_factory=list)
+    # 2-3 context-aware follow-up QUESTIONS (additive; old stored answers
+    # simply have an empty list here).
+    suggested_questions: list[SuggestedQuestion] = Field(default_factory=list)
     sayari_risk_factors: list[SayariRiskFactor] = Field(default_factory=list)
     tools_used: list[str] = Field(default_factory=list)
 

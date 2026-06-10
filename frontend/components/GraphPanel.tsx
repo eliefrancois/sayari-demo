@@ -200,6 +200,8 @@ export interface GraphPanelProps {
   onExpandNode?: (nodeId: string, kind: ExpandKind) => void;
   /** User chose "pin/unpin to context" from the right-click menu. */
   onTogglePin?: (nodeId: string) => void;
+  /** User chose "Open detail view" — opens the right-hand EntityDetailPanel. */
+  onOpenDetail?: (nodeId: string) => void;
   /**
    * Lead counts from the latest broad search: how many leads are pinned to the
    * canvas vs total found. When total > shown, a small "Showing N of M leads"
@@ -274,6 +276,7 @@ function GraphPanelInner({
   hiddenLabels,
   onExpandNode,
   onTogglePin,
+  onOpenDetail,
   leadsShown,
   leadsTotal,
   overlayLeadNodes,
@@ -817,6 +820,14 @@ function GraphPanelInner({
         <NodeContextMenu
           menu={menu}
           isPinned={pinnedNodeIds?.has(menu.node.id) ?? false}
+          onOpenDetail={
+            onOpenDetail
+              ? () => {
+                  onOpenDetail(menu.node.id);
+                  setMenu(null);
+                }
+              : undefined
+          }
           onExpand={(kind) => {
             onExpandNode?.(menu.node.id, kind);
             setMenu(null);
@@ -890,12 +901,14 @@ const MENU_OPTIONS: { kind: ExpandKind; label: string; appliesTo: NodeLabel[] | 
 function NodeContextMenu({
   menu,
   isPinned,
+  onOpenDetail,
   onExpand,
   onTogglePin,
   onClose,
 }: {
   menu: NonNullable<ContextMenuState>;
   isPinned: boolean;
+  onOpenDetail?: () => void;
   onExpand: (kind: ExpandKind) => void;
   onTogglePin: () => void;
   onClose: () => void;
@@ -917,6 +930,16 @@ function NodeContextMenu({
         </div>
       </div>
       <ul>
+        {onOpenDetail && (
+          <li className="border-b border-border">
+            <button
+              onClick={onOpenDetail}
+              className="block w-full cursor-pointer px-3 py-1.5 text-left font-medium text-foreground hover:bg-muted"
+            >
+              Open detail view
+            </button>
+          </li>
+        )}
         <li className="border-b border-border">
           <button
             onClick={onTogglePin}

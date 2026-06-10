@@ -34,13 +34,15 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { motion } from "framer-motion";
-import { ArrowUp, Search, X } from "lucide-react";
+import { ArrowUp, Plus, Search, X } from "lucide-react";
 import {
   PromptInput,
   PromptInputActions,
   PromptInputTextarea,
 } from "@/components/ui/prompt-input";
+import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type { ConversationState, Turn } from "@/lib/conversation-store";
 import { liveHeadTurn, pathToRoot } from "@/lib/conversation-store";
 import {
@@ -66,6 +68,33 @@ const nodeTypes = { turn: TurnNode, draft: DraftNode };
 const EXAMPLES = ["Gazprom", "Sberbank", "Sergey Roldugin", "Huawei Technologies"];
 
 const DRAFT_ID = "__draft__";
+
+/**
+ * Composer autocomplete templates — the investigative taxonomy, parameterized
+ * on known entities. Instantiated with the top corpus entities and filtered by
+ * a case-insensitive substring match on the typed text. Client-side only.
+ */
+const QUESTION_TEMPLATES = [
+  "Who owns {entity}?",
+  "Who are the ultimate beneficial owners of {entity}?",
+  "Is {entity} sanctioned?",
+  "Is {entity} connected to any sanctioned entity?",
+  "Does {entity} appear in the offshore leaks?",
+  "What does {entity} ship?",
+  "Who are {entity}'s trade partners?",
+  "What are the risk factors for {entity}?",
+  "Who are the officers of {entity}?",
+  "Where is {entity} registered?",
+  "Which watchlists mention {entity}?",
+  "What subsidiaries does {entity} control?",
+  "Does {entity} trade in dual-use goods?",
+  "How is {entity} connected to {entity2}?",
+  "Investigate {entity}",
+  "Generate a risk report",
+  "Summarize what we've found so far",
+];
+
+const MAX_SUGGESTIONS = 6;
 
 /** Edge chrome (donor: muted-foreground, 2.25 stroke, rounded caps). */
 const edgeStyle = {
@@ -429,7 +458,98 @@ function InvestigationCanvasInner({
     onSelectTurn(null);
   }, [onSelectTurn]);
 
+  /* ── composer autocomplete (client-side; entities + question templates) ── */
+
+  // Entity-name corpus: graph nodes first (most investigated), then registry
+  // entries that never landed on the graph, then the example seeds.
+  const acEntityNames = useMemo(() => {
+    const names: string[] = [];
+    const seen = new Set<string>();
+    const push = (name?: string | null) => {
+      const trimmed = name?.trim();
+      if (!trimmed || trimmed.length < 3) return;
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      names.push(trimmed);
+    };
+    for (const n of state.nodes.values()) push(n.name);
+    for (const rec of state.registry.values()) push(rec.label);
+    for (const ex of EXAMPLES) push(ex);
+    return names;
+  }, [state.nodes, state.registry]);
+
+  const suggestions = useMemo(() => {
+    const q = composerValue.trim().toLowerCase();
+    if (!q) return [];
+    const top = acEntityNames.slice(0, 3);
+    const candidates: string[] = [];
+    for (const tpl of QUESTION_TEMPLATES) {
+      if (!tpl.includes("{entity}")) {
+        candidates.push(tpl);
+      } else if (tpl.includes("{entity2}")) {
+        if (top.length >= 2)
+          candidates.push(tpl.replace("{entity}", top[0]).replace("{entity2}", top[1]));
+      } else {
+        for (const e of top) candidates.push(tpl.replace("{entity}", e));
+      }
+    }
+    candidates.push(...acEntityNames);
+
+    const out: string[] = [];
+    const seen = new Set<string>();
+    // Prefix matches rank above mid-string matches; stable within each band.
+    for (const pass of [0, 1] as const) {
+      for (const c of candidates) {
+        if (out.length >= MAX_SUGGESTIONS) break;
+        const lower = c.toLowerCase();
+        if (lower === q || seen.has(lower)) continue;
+        const idx = lower.indexOf(q);
+        if (idx === -1) continue;
+        if (pass === 0 ? idx !== 0 : idx === 0) continue;
+        seen.add(lower);
+        out.push(c);
+      }
+    }
+    return out;
+  }, [composerValue, acEntityNames]);
+
+  const [acDismissed, setAcDismissed] = useState(false);
+  const [acIndex, setAcIndex] = useState(-1);
+  useEffect(() => {
+    setAcDismissed(false);
+    setAcIndex(-1);
+  }, [composerValue]);
+  const acOpen = !disabled && !acDismissed && suggestions.length > 0;
+
+  const fillSuggestion = useCallback((text: string) => {
+    setComposerValue(text);
+    // Re-runs of the value effect reopen the panel for chained refinement;
+    // dismiss AFTER so the panel doesn't flicker over the filled text.
+    window.setTimeout(() => setAcDismissed(true), 0);
+  }, []);
+
+  const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Escape") {
+      setAcDismissed(true);
+      return;
+    }
+    if (!acOpen) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setAcIndex((i) => (i + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setAcIndex((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+    }
+  };
+
   const submitComposer = () => {
+    // Enter with an actively selected suggestion fills instead of sending.
+    if (acOpen && acIndex >= 0 && suggestions[acIndex]) {
+      fillSuggestion(suggestions[acIndex]);
+      return;
+    }
     const t = composerValue.trim();
     if (!t || disabled) return;
     // Parent on the selected card so continuing a branch extends it; with no
@@ -443,6 +563,13 @@ function InvestigationCanvasInner({
   const selectedTurn = state.activeTurnId
     ? state.turns.find((t) => t.turnId === state.activeTurnId) ?? null
     : null;
+
+  // The new-branch (+) button forks from the selected turn, falling back to
+  // the live head — the same draft-card flow as the hover-fork on cards.
+  const branchTarget = (selectedTurn ?? liveHead) || null;
+  const canBranch =
+    !disabled && !draft && Boolean(branchTarget?.turnId) &&
+    Boolean(branchTarget && positions.has(canvasIdOf(branchTarget)));
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
@@ -539,7 +666,34 @@ function InvestigationCanvasInner({
       )}
 
       {/* Composer — submits onto the active path head */}
-      <div className="border-t border-border bg-background p-3">
+      <div className="relative border-t border-border bg-background p-3">
+        {/* Autocomplete panel: entities + instantiated question templates,
+            floating above the input. Esc hides; ↑/↓ + Enter navigate/fill. */}
+        {acOpen && (
+          <div className="absolute bottom-full left-3 right-3 z-30 mb-1 flex flex-col gap-0.5 rounded-[10px] border border-border bg-card p-1 shadow-lg">
+            {suggestions.map((s, i) => (
+              <PromptSuggestion
+                key={s}
+                highlight={composerValue.trim()}
+                onMouseDown={(e) => {
+                  // mousedown (not click) so a textarea blur can't race the fill
+                  e.preventDefault();
+                  fillSuggestion(s);
+                }}
+                onMouseEnter={() => setAcIndex(i)}
+                className={cn(
+                  "h-auto min-h-0 rounded-md px-2 py-1.5 text-[12px]",
+                  i === acIndex && "bg-accent"
+                )}
+              >
+                {s}
+              </PromptSuggestion>
+            ))}
+            <div className="px-2 pb-0.5 pt-1 font-mono text-[8px] uppercase tracking-[0.14em] text-muted-foreground/60">
+              ↑↓ select · enter fill · esc dismiss
+            </div>
+          </div>
+        )}
         <PromptInput
           value={composerValue}
           onValueChange={setComposerValue}
@@ -558,8 +712,24 @@ function InvestigationCanvasInner({
                     : "Ask a follow-up, or investigate someone new"
             }
             className="text-[13px]"
+            onKeyDown={onComposerKeyDown}
+            onBlur={() => window.setTimeout(() => setAcDismissed(true), 120)}
+            onFocus={() => setAcDismissed(false)}
           />
-          <PromptInputActions className="justify-end pt-2">
+          <PromptInputActions className="justify-between pt-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (branchTarget) handleFork(branchTarget);
+              }}
+              disabled={!canBranch}
+              className="h-8 w-8 rounded-full p-0"
+              title="New branch from selected turn"
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
             <Button
               size="sm"
               onClick={submitComposer}

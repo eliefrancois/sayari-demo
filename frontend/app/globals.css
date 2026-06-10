@@ -256,6 +256,25 @@ pre,
   }
 }
 
+/* Claim click feedback: the source-chip row flashes once when its claim is
+   clicked (remounted with a key bump to retrigger). */
+@keyframes chip-flash {
+  0% {
+    background-color: transparent;
+  }
+  30% {
+    background-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--foreground) 8%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.chip-flash {
+  animation: chip-flash 0.9s ease;
+  border-radius: 6px;
+}
+
 @keyframes shimmer {
   0% {
     background-position: -200% 0;

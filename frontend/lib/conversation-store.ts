@@ -20,6 +20,7 @@ import type {
   GraphEdge,
   GraphNode,
   LeadNode,
+  RegistryEntity,
   RiskSummary,
   SanctionsHit,
   SanctionsReview,
@@ -55,6 +56,14 @@ export interface Turn {
    * forked from or time-traveled to.
    */
   turnId: string | null;
+  /**
+   * Stable CLIENT-side identity (`pending:<nonce>`), set when a turn is
+   * dispatched optimistically before the server assigns its turnId. The
+   * canvas keys node positions on this so the card doesn't jump or re-place
+   * when the server id arrives (the temp -> server reconcile). Null on
+   * hydrated turns — those key on turnId directly.
+   */
+  clientId: string | null;
   /** Parent turn in the tree. Null for the root (and all legacy turns). */
   parentTurnId: string | null;
   userMessage: string;
@@ -119,6 +128,15 @@ export interface ConversationState {
   /** Whether the unpinned-leads overlay is currently shown (badge toggle). */
   showUnpinnedLeads: boolean;
 
+  /**
+   * The backend's unified id-keyed entity registry (state_doc.entities),
+   * populated on hydrate and refreshed after each completed turn. Feeds the
+   * composer autocomplete corpus and the entity detail panel — entities that
+   * surfaced through tools (search leads, sanctions hits) live here even when
+   * they never landed on the evidence graph.
+   */
+  registry: Map<string, RegistryEntity>;
+
   errorMessage: string | null;
 }
 
@@ -136,6 +154,7 @@ export function initialState(): ConversationState {
     latestSearchMeta: null,
     unpinnedLeadNodes: [],
     showUnpinnedLeads: false,
+    registry: new Map(),
     errorMessage: null,
   };
 }
@@ -144,14 +163,27 @@ export type Action =
   | { type: "reset" }
   | { type: "conversation_created"; conversationId: string }
   | {
-      type: "turn_sent";
-      turnIndex: number;
-      turnId: string | null;
+      /**
+       * Optimistic append: the provisional turn renders the instant the user
+       * sends, BEFORE createConversation / POST /messages round-trip. The
+       * turn carries a stable `clientId` and no server turnId yet.
+       */
+      type: "turn_pending";
+      clientId: string;
       parentTurnId: string | null;
       userMessage: string;
       pinnedNodeIds: string[];
       forceRiskReport: boolean;
     }
+  | {
+      /** Reconcile the provisional turn with the server-assigned identity. */
+      type: "turn_resolved";
+      clientId: string;
+      turnIndex: number;
+      turnId: string | null;
+      parentTurnId: string | null;
+    }
+  | { type: "registry"; entities: Record<string, RegistryEntity> }
   | { type: "select_turn"; turnId: string | null }
   | { type: "event"; event: StreamEvent }
   | { type: "closed"; reason: "done" | "error" | "network" | "manual" }
@@ -232,11 +264,13 @@ function newTurn(
   pinnedNodeIds: string[],
   forceRiskReport: boolean,
   turnId: string | null = null,
-  parentTurnId: string | null = null
+  parentTurnId: string | null = null,
+  clientId: string | null = null
 ): Turn {
   return {
     index,
     turnId,
+    clientId,
     parentTurnId,
     reportReady: false,
     userMessage,
@@ -264,7 +298,12 @@ export function reduce(state: ConversationState, action: Action): ConversationSt
     case "conversation_created":
       return { ...state, conversationId: action.conversationId };
 
-    case "turn_sent":
+    case "turn_pending": {
+      // Provisional index: one past the highest known. The server's value
+      // arrives with turn_resolved (they agree except in pathological races).
+      const nextIndex = state.turns.length
+        ? Math.max(...state.turns.map((t) => t.index)) + 1
+        : 0;
       return {
         ...state,
         status: "running",
@@ -272,12 +311,13 @@ export function reduce(state: ConversationState, action: Action): ConversationSt
         turns: [
           ...state.turns,
           newTurn(
-            action.turnIndex,
+            nextIndex,
             action.userMessage,
             action.pinnedNodeIds,
             action.forceRiskReport,
-            action.turnId,
-            action.parentTurnId
+            null,
+            action.parentTurnId,
+            action.clientId
           ),
         ],
         // The new turn is the live head now — clear the selection so the
@@ -286,6 +326,32 @@ export function reduce(state: ConversationState, action: Action): ConversationSt
         // Pins are consumed by the turn; clear so they don't leak forward.
         pinnedNodeIds: new Set(),
       };
+    }
+
+    case "turn_resolved":
+      return {
+        ...state,
+        turns: state.turns.map((t) =>
+          t.clientId === action.clientId
+            ? {
+                ...t,
+                index: action.turnIndex,
+                turnId: action.turnId,
+                // The server resolves the actual parent (the current head
+                // when we omitted one) — store its answer, not our request.
+                parentTurnId: action.parentTurnId,
+              }
+            : t
+        ),
+      };
+
+    case "registry": {
+      const registry = new Map<string, RegistryEntity>();
+      for (const [id, rec] of Object.entries(action.entities)) {
+        if (rec) registry.set(id, rec);
+      }
+      return { ...state, registry };
+    }
 
     case "select_turn":
       return state.activeTurnId === action.turnId
@@ -631,6 +697,11 @@ function hydrate(state: ConversationState, p: ConversationHydrate): Conversation
     return t;
   });
 
+  const registry = new Map<string, RegistryEntity>();
+  for (const [id, rec] of Object.entries(p.state_doc?.entities ?? {})) {
+    if (rec) registry.set(id, rec);
+  }
+
   return {
     ...initialState(),
     conversationId: p.conversation_id,
@@ -640,5 +711,6 @@ function hydrate(state: ConversationState, p: ConversationHydrate): Conversation
     turns,
     nodes,
     edges,
+    registry,
   };
 }

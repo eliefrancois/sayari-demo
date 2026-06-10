@@ -1,30 +1,25 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ExternalLink, Search, RotateCcw, FileText, ShieldAlert, HelpCircle, GitBranch } from "lucide-react";
+import { Download, ExternalLink, Search, ShieldAlert, HelpCircle, GitBranch } from "lucide-react";
 import type {
   Claim,
   GraphNode,
   RiskSummary,
   SayariRiskFactor,
-  SourceRef,
 } from "@/lib/types";
 import {
   SAYARI_LEVEL_META,
-  SOURCE_SYSTEM_META,
   sayariLevelRank,
-  sourceSystemOf,
   pathNodeIds,
   humanizeRiskFactor,
 } from "@/lib/types";
+import { FollowUpSection } from "./AnswerCard";
 import { RiskSignalBadge } from "./RiskSignalBadge";
+import { ClaimSourceChip } from "./ClaimSourceChip";
+import { downloadRiskReportPdf } from "@/lib/report-pdf";
 import { Markdown } from "@/components/ui/markdown";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 
 /* Confidence is grayscale — color is reserved for risk severity and source
@@ -44,9 +39,6 @@ const CONFIDENCE_RANK: Record<Claim["confidence"], number> = {
 const googleUrl = (q: string) =>
   `https://www.google.com/search?q=${encodeURIComponent(q)}`;
 
-const opensanctionsUrl = (id: string) =>
-  `https://www.opensanctions.org/entities/${encodeURIComponent(id)}/`;
-
 /**
  * The formal investigation memo. Per the spec this stays a visually DISTINCT
  * card vs normal conversation turns: inverted corner badge, heavier header,
@@ -56,6 +48,7 @@ export function RiskSummaryCard({
   summary,
   nodesById,
   onFollowup,
+  onAskQuestion,
   onHighlightNodes,
   onClearHighlight,
   onFocusNode,
@@ -65,6 +58,8 @@ export function RiskSummaryCard({
   nodesById?: Map<string, GraphNode>;
   /** Click a follow-up pill -> kick off a new investigation. */
   onFollowup?: (name: string) => void;
+  /** Click a FOLLOW UP question chip -> send the question verbatim. */
+  onAskQuestion?: (question: string) => void;
   /** Hover a claim -> pulse its source nodes in the graph. */
   onHighlightNodes?: (nodeIds: string[]) => void;
   onClearHighlight?: () => void;
@@ -97,9 +92,23 @@ export function RiskSummaryCard({
         <span className="rounded-md bg-foreground px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] text-background">
           risk summary
         </span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            const opened = downloadRiskReportPdf(summary, nodesById);
+            if (!opened) {
+              window.alert("Popup blocked — allow popups for this site to download the PDF.");
+            }
+          }}
+          title="Open a print-ready report and save it as a PDF"
+          className="nodrag ml-auto flex cursor-pointer items-center gap-1 rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <Download className="h-2.5 w-2.5" /> download pdf
+        </button>
         <span
           className={
-            "ml-auto rounded-md border px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] " +
+            "rounded-md border px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] " +
             (summary.found
               ? "border-border bg-muted text-foreground"
               : "border-border bg-transparent text-muted-foreground")
@@ -145,53 +154,16 @@ export function RiskSummaryCard({
             </span>
           </h4>
           <ul className="space-y-2">
-            {sortedClaims.map((c, i) => {
-              const nodeIds = c.source_refs
-                .map((r) => r.node_id)
-                .filter((id): id is string => !!id);
-              return (
-                <li
-                  key={i}
-                  onMouseEnter={() =>
-                    nodeIds.length && onHighlightNodes?.(nodeIds)
-                  }
-                  onMouseLeave={() => onClearHighlight?.()}
-                  className="cursor-default rounded-[8px] border border-border bg-background p-2.5 transition-colors hover:border-foreground/30 hover:bg-muted/50"
-                >
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <span
-                      className={
-                        "rounded border px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.12em] " +
-                        CONFIDENCE_STYLE[c.confidence]
-                      }
-                    >
-                      {c.confidence}
-                    </span>
-                  </div>
-                  <Markdown className="text-xs leading-relaxed text-foreground/90">
-                    {c.text}
-                  </Markdown>
-                  {c.source_refs.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                      <span className="font-mono text-[8px] uppercase tracking-[0.14em] text-muted-foreground/70">
-                        sources
-                      </span>
-                      {c.source_refs.map((ref, j) => (
-                        <ClaimSourceChip
-                          key={j}
-                          index={j + 1}
-                          ref_={ref}
-                          node={
-                            ref.node_id ? nodesById?.get(ref.node_id) : undefined
-                          }
-                          onFocusNode={onFocusNode}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
+            {sortedClaims.map((c, i) => (
+              <SummaryClaimRow
+                key={i}
+                claim={c}
+                nodesById={nodesById}
+                onHighlightNodes={onHighlightNodes}
+                onClearHighlight={onClearHighlight}
+                onFocusNode={onFocusNode}
+              />
+            ))}
           </ul>
         </section>
       )}
@@ -311,28 +283,22 @@ export function RiskSummaryCard({
         </section>
       )}
 
-      {summary.suggested_followups && summary.suggested_followups.length > 0 && (
-        <section className="mb-3">
-          <h4 className="mb-2 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            <RotateCcw className="h-3 w-3" /> Follow-up investigations
-          </h4>
-          <div className="flex flex-wrap gap-1.5">
-            {summary.suggested_followups.map((s, i) => (
-              <motion.button
-                key={i}
-                type="button"
-                whileTap={{ scale: 0.97 }}
-                whileHover={{ y: -1 }}
-                onClick={() => onFollowup?.(s.name)}
-                title={s.reason}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-foreground/80 transition-colors hover:border-foreground/40 hover:text-foreground focus:outline-none"
-              >
-                {s.name}
-              </motion.button>
-            ))}
-          </div>
-        </section>
-      )}
+      {/* FOLLOW UP: questions primary, entity followups secondary. onFollowup
+          historically receives the bare name (the caller adds "Investigate"),
+          so route both chip kinds through the right callback. */}
+      <FollowUpSection
+        className="mb-3 border-t-0 pt-0"
+        questions={summary.suggested_questions ?? []}
+        followups={summary.suggested_followups ?? []}
+        onSend={(text) => {
+          if (onAskQuestion) {
+            onAskQuestion(text);
+            return;
+          }
+          // Fallback: strip the helper prefix for legacy onFollowup wiring.
+          onFollowup?.(text.replace(/^Investigate /, ""));
+        }}
+      />
 
       <footer className="mt-3 flex items-center justify-between border-t border-border pt-2 font-mono text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
         <span className="normal-case">Tools used: {summary.tools_used.join(", ")}</span>
@@ -341,6 +307,100 @@ export function RiskSummaryCard({
         )}
       </footer>
     </motion.div>
+  );
+}
+
+/**
+ * One claim row on the report card. Hover previews the claim's entities on
+ * the graph; CLICK pins the highlight and flashes the source chips. Claims
+ * with no resolvable graph entities render visibly non-interactive.
+ */
+function SummaryClaimRow({
+  claim,
+  nodesById,
+  onHighlightNodes,
+  onClearHighlight,
+  onFocusNode,
+}: {
+  claim: Claim;
+  nodesById?: Map<string, GraphNode>;
+  onHighlightNodes?: (nodeIds: string[]) => void;
+  onClearHighlight?: () => void;
+  onFocusNode?: (nodeId: string) => void;
+}) {
+  const allNodeIds = claim.source_refs
+    .map((r) => r.node_id)
+    .filter((id): id is string => !!id);
+  // Only ids actually on the evidence graph count — a claim whose refs all
+  // point at off-graph ICIJ nodes would otherwise advertise a click that
+  // highlights nothing.
+  const nodeIds = nodesById
+    ? allNodeIds.filter((id) => nodesById.has(id))
+    : allNodeIds;
+  const interactive = nodeIds.length > 0 && Boolean(onHighlightNodes);
+  const [flashTick, setFlashTick] = useState(0);
+  const lastClickAt = useRef(0);
+
+  return (
+    <li
+      onMouseEnter={() => interactive && onHighlightNodes?.(nodeIds)}
+      onMouseLeave={() => {
+        if (Date.now() - lastClickAt.current > 1200) onClearHighlight?.();
+      }}
+      onClick={() => {
+        if (!interactive) return;
+        lastClickAt.current = Date.now();
+        onHighlightNodes?.(nodeIds);
+        setFlashTick((t) => t + 1);
+      }}
+      title={
+        interactive
+          ? "Click to highlight this claim's entities on the graph"
+          : undefined
+      }
+      className={cn(
+        "rounded-[8px] border border-border bg-background p-2.5 transition-colors",
+        interactive
+          ? "cursor-pointer hover:border-foreground/30 hover:bg-muted/50"
+          : "cursor-default"
+      )}
+    >
+      <div className="mb-1.5 flex items-center gap-2">
+        <span
+          className={
+            "rounded border px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.12em] " +
+            CONFIDENCE_STYLE[claim.confidence]
+          }
+        >
+          {claim.confidence}
+        </span>
+      </div>
+      <Markdown className="text-xs leading-relaxed text-foreground/90">
+        {claim.text}
+      </Markdown>
+      {claim.source_refs.length > 0 && (
+        <div
+          key={flashTick}
+          className={cn(
+            "mt-1.5 flex flex-wrap items-center gap-1",
+            flashTick > 0 && "chip-flash"
+          )}
+        >
+          <span className="font-mono text-[8px] uppercase tracking-[0.14em] text-muted-foreground/70">
+            sources
+          </span>
+          {claim.source_refs.map((ref, j) => (
+            <ClaimSourceChip
+              key={j}
+              index={j + 1}
+              ref_={ref}
+              node={ref.node_id ? nodesById?.get(ref.node_id) : undefined}
+              onFocusNode={onFocusNode}
+            />
+          ))}
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -450,130 +510,5 @@ function SayariRiskFactors({
         })}
       </div>
     </section>
-  );
-}
-
-/**
- * One source citation chip. Three flavors based on which fields the
- * SourceRef has:
- *  - ICIJ graph node    -> chip with an ICIJ (magenta) source dot + name.
- *                          Hover shows full metadata, click highlights node.
- *  - OpenSanctions hit  -> teal-dotted chip linking to opensanctions.org.
- *  - Sayari factor      -> indigo-dotted chip.
- *  - Bare leak ref      -> grey chip with just the leak name.
- * Dot color = source system (the spec's ring/dot signal).
- */
-function ClaimSourceChip({
-  index,
-  ref_,
-  node,
-  onFocusNode,
-}: {
-  index: number;
-  ref_: SourceRef;
-  node?: GraphNode;
-  onFocusNode?: (nodeId: string) => void;
-}) {
-  if (ref_.source === "opensanctions" && ref_.sanctions_id) {
-    return (
-      <a
-        href={opensanctionsUrl(ref_.sanctions_id)}
-        target="_blank"
-        rel="noopener noreferrer"
-        title="Open in OpenSanctions"
-        className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
-      >
-        <span className="font-medium tabular-nums">[{index}]</span>
-        <span
-          className="h-1.5 w-1.5 rounded-full border bg-card"
-          style={{ borderColor: SOURCE_SYSTEM_META.sanctions.color }}
-        />
-        <span className="max-w-[140px] truncate">OpenSanctions</span>
-        <ExternalLink className="h-2.5 w-2.5" />
-      </a>
-    );
-  }
-
-  if (ref_.source === "sayari") {
-    const label = ref_.risk_factor
-      ? humanizeRiskFactor(ref_.risk_factor)
-      : "Sayari";
-    return (
-      <span
-        title={ref_.sayari_entity_id ? `Sayari entity ${ref_.sayari_entity_id}` : "Sayari"}
-        className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground"
-      >
-        <span className="font-medium tabular-nums">[{index}]</span>
-        <span
-          className="h-1.5 w-1.5 rounded-full border bg-card"
-          style={{ borderColor: SOURCE_SYSTEM_META.sayari.color }}
-        />
-        <span className="max-w-[160px] truncate">{label}</span>
-      </span>
-    );
-  }
-
-  if (ref_.source === "icij" && ref_.node_id) {
-    const dotColor = node
-      ? SOURCE_SYSTEM_META[sourceSystemOf(node.source_system)].color
-      : SOURCE_SYSTEM_META.icij.color;
-    const displayName = node?.name ?? `node ${ref_.node_id.slice(-6)}`;
-    return (
-      <HoverCard>
-        <HoverCardTrigger
-          render={
-            <button
-              onClick={() => ref_.node_id && onFocusNode?.(ref_.node_id)}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-full border border-border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground",
-                "cursor-pointer transition-colors hover:border-foreground/40 hover:text-foreground"
-              )}
-            />
-          }
-        >
-          <span className="font-medium tabular-nums">[{index}]</span>
-          <span
-            className="h-1.5 w-1.5 rounded-full border bg-card"
-            style={{ borderColor: dotColor }}
-          />
-          <span className="max-w-[140px] truncate">{displayName}</span>
-        </HoverCardTrigger>
-        <HoverCardContent className="w-72 border-border bg-card p-3 text-xs text-foreground shadow-md">
-          <div className="mb-1 flex items-center gap-1.5">
-            <span
-              className="h-2 w-2 rounded-full border bg-card"
-              style={{ borderColor: dotColor }}
-            />
-            <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">
-              {node?.label ?? "ICIJ node"}
-            </span>
-            {ref_.leak && (
-              <span className="ml-auto text-[10px] text-muted-foreground">
-                {ref_.leak}
-              </span>
-            )}
-          </div>
-          <div className="break-words font-medium text-foreground">
-            {displayName}
-          </div>
-          {node?.source && !ref_.leak && (
-            <div className="mt-1 text-[10px] text-muted-foreground">
-              source: {node.source}
-            </div>
-          )}
-          <div className="mt-2 flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">
-            <FileText className="h-3 w-3" /> click to focus in graph
-          </div>
-        </HoverCardContent>
-      </HoverCard>
-    );
-  }
-
-  // Fallback: leak-only ref.
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
-      <span className="tabular-nums">[{index}]</span>
-      <span>{ref_.leak ?? ref_.source}</span>
-    </span>
   );
 }
