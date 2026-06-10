@@ -1,3 +1,6 @@
+<img width="241" height="108" alt="Screenshot 2026-06-10 at 7 04 17 PM" src="https://github.com/user-attachments/assets/66d791e0-cd8b-48f8-a165-117c268d0f4a" />
+
+
 # Entity Risk Resolver
 
 > Read-only investigation agent that traverses the ICIJ Offshore Leaks corporate-ownership graph,
