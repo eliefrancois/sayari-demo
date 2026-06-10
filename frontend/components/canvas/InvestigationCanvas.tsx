@@ -60,6 +60,9 @@ import {
   type DraftFlowNode,
   type TurnFlowNode,
 } from "./TurnNode";
+import { GroupSummaryOverlay } from "./GroupSummaryOverlay";
+import { buildFallbackGroupSummaries } from "@/lib/groupClustering";
+import type { GroupSummary } from "@/lib/groupSummary";
 
 type CanvasFlowNode = TurnFlowNode | DraftFlowNode;
 
@@ -417,6 +420,33 @@ function InvestigationCanvasInner({
     return edges;
   }, [rfNodes, state.turns, draft, activePathCanvasIds]);
 
+  /* ── semantic branch labels (donor: lmcanvas GroupSummaryOverlay) ──────── */
+
+  // Cluster turns by user-message text (Jaccard) and derive heuristic titles.
+  // Candidates key on the canvas node id so the overlay can match the rendered
+  // turn nodes; only placed, non-empty turns participate.
+  const groupSummaries = useMemo<GroupSummary[]>(() => {
+    const candidates = state.turns
+      .filter((t) => positions.has(canvasIdOf(t)))
+      .map((t) => ({ nodeId: canvasIdOf(t), prompt: t.userMessage }))
+      .filter((c) => c.prompt.trim().length > 0);
+    if (candidates.length < 2) return [];
+    return buildFallbackGroupSummaries(candidates).map((g) => ({
+      // Stable id from the sorted member set so unchanged groups keep identity
+      // (and their enter/exit animation) across re-renders.
+      id: [...g.nodeIds].sort().join("|"),
+      title: g.title,
+      nodeIds: g.nodeIds,
+    }));
+  }, [state.turns, positions]);
+
+  // The overlay measures node rects; feed it only the turn nodes (never the
+  // transient draft card).
+  const overlayNodes = useMemo(
+    () => rfNodes.filter((n) => n.type === "turn"),
+    [rfNodes]
+  );
+
   /* ── interaction handlers ──────────────────────────────────────────────── */
 
   const onNodesChange = useCallback(
@@ -614,6 +644,7 @@ function InvestigationCanvasInner({
               size={1}
               color="var(--grid-line)"
             />
+            <GroupSummaryOverlay summaries={groupSummaries} nodes={overlayNodes} />
           </ReactFlow>
 
           {/* Radial vignette fading the grid toward the pane edges */}

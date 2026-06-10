@@ -29,6 +29,15 @@ export interface GraphNode {
   source: string | null;
   /** Data system this node came from. Null on legacy ICIJ nodes (treat as "icij"). */
   source_system?: SourceSystem | null;
+  /**
+   * Subject-membership provenance (backend-authored): the resolved subject
+   * entity id(s) this node belongs to, for group-aware layout + hull regions.
+   * A node shared by two subjects (e.g. a shortest-path intermediary) carries
+   * both ids and lands in the overlap. Absent/empty on legacy stored graphs.
+   */
+  subject_ids?: string[];
+  /** turn_id that first introduced this node. Absent on legacy nodes. */
+  introduced_turn_id?: string | null;
   properties: Record<string, unknown>;
 }
 

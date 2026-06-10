@@ -1097,12 +1097,21 @@ def shortest_path_to_neighborhood(
     source_id: str,
     source_label: str,
     source_type: str | None = None,
+    id_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> Neighborhood:
     """Map a shortest-path result onto the Neighborhood shape, reusing the
     ownership path replayer (same {source, target, path} item shape), then fold
     in the `target` endpoint node — the EntityDetails on the result names it
     better than a bare path hop (and guarantees it renders when the replay
-    produced no hop for it)."""
+    produced no hop for it).
+
+    The ownership replayer only adds an edge per hop (prev -> hop), so the FINAL
+    last-hop -> target leg is never drawn when the path is non-empty. That left
+    intermediaries (e.g. Roldugin -> Kerimov -> Gazprom) as disconnected leaves:
+    the Kerimov -> Gazprom edge was missing. We always close the chain into the
+    target here. `id_lookup` (entities seen this conversation) names hop/target
+    nodes the raw result leaves anonymous so intermediates don't fall back to
+    "(unnamed)"."""
     nb = ownership_to_neighborhood(
         raw, source_id, source_label, "shortest_path", source_type
     )
@@ -1114,10 +1123,32 @@ def shortest_path_to_neighborhood(
     if tid:
         # The EntityDetails endpoint node wins over an unnamed hop placeholder.
         nodes[tid] = _entity_node(target)
-        if not item.get("path"):
-            edge_map = {f"{e.source}::{e.type}::{e.target}": e for e in nb.edges}
-            _add_edge(edge_map, source_id, tid, "linked_to")
-            nb.edges = list(edge_map.values())
+        edge_map = {f"{e.source}::{e.type}::{e.target}": e for e in nb.edges}
+        # The last node before the target: the final path hop's entity, falling
+        # back to the source when the path is empty (direct source -> target).
+        last_id = source_id
+        last_field = "linked_to"
+        for hop in item.get("path") or []:
+            if not isinstance(hop, dict):
+                continue
+            ent = hop.get("entity") or {}
+            if ent.get("id"):
+                last_id = ent["id"]
+                last_field = str(hop.get("field") or "linked_to")
+        # Always close the chain into the target (skip only when the path already
+        # ends AT the target, where the replay drew that final edge for us).
+        if last_id != tid:
+            _add_edge(edge_map, last_id, tid, last_field)
+        nb.edges = list(edge_map.values())
+    if id_lookup:
+        # Name any hop/target node the raw result left anonymous from entities
+        # already seen this conversation (richer in-hand data wins, so a real
+        # label is never overwritten by a placeholder).
+        for nid, node in nodes.items():
+            named = (id_lookup.get(nid) or {}).get("label")
+            if named and (not node.name or node.name == "(unnamed)"
+                          or node.name == f"…{nid[-6:]}"):
+                node.name = named
     nb.nodes = list(nodes.values())
     nb.metadata["kind"] = "shortest_path"
     nb.metadata["target_id"] = tid

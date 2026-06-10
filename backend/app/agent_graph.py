@@ -318,6 +318,57 @@ async def agent_node(state: TurnState) -> dict[str, Any]:
     return {"messages": [gathered]}
 
 
+# Tools whose single subject is the entity they were called on. shortest_path
+# is handled separately (two subjects). Tools that don't produce subject-owned
+# graph nodes (search leads, resolution, memory reads) are intentionally absent
+# so their nodes stay ungrouped.
+_SINGLE_SUBJECT_TOOLS = frozenset({
+    "sayari_profile",
+    "sayari_summary",
+    "sayari_ownership",
+    "sayari_watchlist",
+    "sayari_trade",
+})
+
+
+def _tag_subject_membership(
+    name: str,
+    args: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    turn_id: str | None,
+) -> None:
+    """Stamp `subject_ids` + `introduced_turn_id` onto a tool's emitted nodes.
+
+    shortest_path is the multi-subject case: the source node belongs to subject
+    A, the target node to subject B, and every intermediate to BOTH — so a
+    shared intermediary settles in the A∩B overlap and both hulls enclose it.
+    Single-subject tools attribute every node to the entity they were called on.
+    Membership is unioned across turns by merge_graph_pure's id-keyed dedupe."""
+    if name == "sayari_shortest_path":
+        src = args.get("source_id")
+        tgt = args.get("target_id")
+        both = [s for s in (src, tgt) if s]
+        for node in nodes:
+            nid = node.get("id")
+            if nid == src and src:
+                subjects = [src]
+            elif nid == tgt and tgt:
+                subjects = [tgt]
+            else:
+                subjects = both
+            node["subject_ids"] = subjects
+            if turn_id and not node.get("introduced_turn_id"):
+                node["introduced_turn_id"] = turn_id
+        return
+    if name in _SINGLE_SUBJECT_TOOLS:
+        eid = args.get("entity_id")
+        subjects = [eid] if eid else []
+        for node in nodes:
+            node["subject_ids"] = subjects
+            if turn_id and not node.get("introduced_turn_id"):
+                node["introduced_turn_id"] = turn_id
+
+
 async def tools_node(state: TurnState) -> dict[str, Any]:
     """Execute the tool calls on the latest AIMessage.
 
@@ -423,6 +474,17 @@ async def tools_node(state: TurnState) -> dict[str, Any]:
             parsed = {}
 
         gnodes, gedges = graph_payload(name, parsed)
+        # Subject-membership provenance (Phase 1): attribute each emitted node to
+        # the resolved subject(s) of the tool call that produced it, so the
+        # frontend can group nodes into per-subject hull regions and place
+        # shared nodes in the overlap. shortest_path is the multi-subject case:
+        # the source belongs to A, the target to B, and every INTERMEDIATE to
+        # BOTH (that's what puts e.g. Kerimov in the Gazprom-Roldugin
+        # intersection). Single-subject tools attribute every node to their
+        # entity_id. The id-keyed dedupe in merge_graph_pure unions these across
+        # turns. Tagging here (where the tool args are in hand) is the precise
+        # per-tool attribution the plan's turn-level finalize sketch approximates.
+        _tag_subject_membership(name, args, gnodes, state.get("turn_id"))
         new_nodes.extend(gnodes)
         new_edges.extend(gedges)
 

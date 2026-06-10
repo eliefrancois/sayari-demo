@@ -412,8 +412,15 @@ async def sayari_shortest_path_tool(
     # response names every hop + the target, but not the query's source).
     known = await _known_entity_lookup(conversation_id)
     src = known.get(source_id) or {}
+    # Thread the conversation-known lookup through so intermediaries the raw
+    # shortest-path result leaves anonymous get named (mirrors how risk-path
+    # nodes are resolved), instead of rendering as "(unnamed)" leaves.
     nb: Neighborhood = sayari.shortest_path_to_neighborhood(
-        raw, source_id, src.get("label") or f"…{source_id[-6:]}", src.get("type")
+        raw,
+        source_id,
+        src.get("label") or f"…{source_id[-6:]}",
+        src.get("type"),
+        id_lookup=known,
     )
     return {
         "path": sp.model_dump(),

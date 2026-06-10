@@ -22,10 +22,14 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   type Simulation,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
+
+import { EntityHullOverlay, type HullGroup } from "./GraphPanel/EntityHullOverlay";
 
 import type {
   ExpandKind,
@@ -153,8 +157,76 @@ type SimNode = SimulationNodeDatum & {
   id: string;
   raw: ERGraphNode;
   isSubject: boolean;
+  /** Group-aware layout target: the centroid of this node's subject anchors. */
+  tx: number;
+  ty: number;
 };
 type SimLink = SimulationLinkDatum<SimNode>;
+
+// Approximate half-size of a rendered node pill, used to turn React Flow's
+// top-left node position into a center point for layout targets + hulls.
+const NODE_HALF_W = 70;
+const NODE_HALF_H = 18;
+
+/** Deterministic 32-bit hash (FNV-1a) of a string — seeds reproducible jitter. */
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** Stable per-node jitter in [-amp, amp], so first-frame seeds don't stack. */
+function seededJitter(id: string, axis: string, amp: number): number {
+  return ((hashStr(id + axis) % 1000) / 1000 - 0.5) * 2 * amp;
+}
+
+/**
+ * Stable anchor position per subject id: subjects are sorted by id and laid out
+ * on a ring (single subject -> origin) so the arrangement is deterministic
+ * across renders and reloads. A node is later pulled toward the centroid of the
+ * anchors of every subject it belongs to, so shared nodes settle in the overlap.
+ */
+function computeSubjectAnchors(
+  nodes: ERGraphNode[]
+): Map<string, { x: number; y: number }> {
+  const ids = new Set<string>();
+  for (const n of nodes) for (const s of n.subject_ids ?? []) if (s) ids.add(s);
+  const sorted = Array.from(ids).sort();
+  const anchors = new Map<string, { x: number; y: number }>();
+  const count = sorted.length;
+  if (count === 0) return anchors;
+  if (count === 1) {
+    anchors.set(sorted[0], { x: 0, y: 0 });
+    return anchors;
+  }
+  // Radius grows with subject count so neighborhoods don't crowd each other.
+  const radius = Math.max(320, count * 150);
+  sorted.forEach((id, i) => {
+    const theta = (2 * Math.PI * i) / count - Math.PI / 2;
+    anchors.set(id, { x: radius * Math.cos(theta), y: radius * Math.sin(theta) });
+  });
+  return anchors;
+}
+
+/** Layout target for a node: centroid of its subjects' anchors, else origin. */
+function layoutTarget(
+  node: ERGraphNode,
+  anchors: Map<string, { x: number; y: number }>
+): { x: number; y: number } {
+  const subs = (node.subject_ids ?? []).filter((s) => anchors.has(s));
+  if (subs.length === 0) return { x: 0, y: 0 };
+  let x = 0;
+  let y = 0;
+  for (const s of subs) {
+    const a = anchors.get(s)!;
+    x += a.x;
+    y += a.y;
+  }
+  return { x: x / subs.length, y: y / subs.length };
+}
 
 /** Stable hash of the input dataset; lets us detect "nothing changed, skip restart". */
 function datasetKey(nodes: ERGraphNode[], edges: ERGraphEdge[]) {
@@ -390,27 +462,39 @@ function GraphPanelInner({
 
     const subjectId = visibleNodes[0]?.id;
 
-    // Seed each sim node with a known position (if any) or a small random
-    // scatter near the origin. The scatter is tiny so the sim doesn't have
-    // to do a big spread-out animation on the first run.
+    // Group-aware layout (plan Phase 2): stable per-subject anchors. When the
+    // graph carries subject membership we pull each node toward the centroid of
+    // its subjects' anchors (multi-subject nodes land in the overlap). Legacy /
+    // ICIJ graphs with no membership fall back to the original origin-anchored
+    // behavior, so nothing about those layouts changes.
+    const subjectAnchors = computeSubjectAnchors(visibleNodes);
+    const grouped = subjectAnchors.size > 0;
+
+    // Seed each sim node from its warm-started position (if any) or, for a
+    // reproducible first frame, its layout target plus a deterministic hash
+    // jitter (replaces the old Math.random scatter that reshuffled clusters).
     const simNodes: SimNode[] = visibleNodes.map((n) => {
       const prev = positionsRef.current.get(n.id);
       const isSubject = n.id === subjectId;
+      const target = layoutTarget(n, subjectAnchors);
       const sn: SimNode = {
         id: n.id,
         raw: n,
         isSubject,
-        x: prev?.x ?? (Math.random() - 0.5) * 80,
-        y: prev?.y ?? (Math.random() - 0.5) * 80,
+        tx: target.x,
+        ty: target.y,
+        x: prev?.x ?? target.x + seededJitter(n.id, "x", 40),
+        y: prev?.y ?? target.y + seededJitter(n.id, "y", 40),
       };
-      if (isSubject) {
-        // Anchor subject at origin so the whole graph orbits something stable.
-        sn.fx = 0;
-        sn.fy = 0;
-      } else if (prev?.pinned) {
-        // User-dragged: keep where they put it.
+      if (prev?.pinned) {
+        // User-dragged: keep where they put it (wins over group pull).
         sn.fx = prev.x;
         sn.fy = prev.y;
+      } else if (!grouped && isSubject) {
+        // Ungrouped legacy graphs: keep the subject pinned at origin so the
+        // network orbits a stable focal point (the pre-grouping behavior).
+        sn.fx = 0;
+        sn.fy = 0;
       }
       return sn;
     });
@@ -442,12 +526,28 @@ function GraphPanelInner({
           .distance(160)
           .strength(0.55)
       )
-      // Pull toward origin. Weak — the subject anchor at (0,0) does most
+      // Pull toward origin. Weak — the subject anchors / origin pin do most
       // of the centering work.
       .force("center", forceCenter(0, 0).strength(0.05))
       // Stop nodes from overlapping. Radius is a touch bigger than the
       // rendered node so labels don't collide either.
       .force("collide", forceCollide<SimNode>(72).strength(0.9))
+      // Group pull: draw each node toward its subject-anchor centroid so
+      // per-subject neighborhoods cluster and shared nodes sit between them.
+      // Stronger when there are multiple subjects to keep regions separated;
+      // gentle for a single subject so its cluster still breathes naturally.
+      .force(
+        "groupX",
+        forceX<SimNode>((d) => d.tx).strength(
+          grouped ? (subjectAnchors.size > 1 ? 0.16 : 0.04) : 0
+        )
+      )
+      .force(
+        "groupY",
+        forceY<SimNode>((d) => d.ty).strength(
+          grouped ? (subjectAnchors.size > 1 ? 0.16 : 0.04) : 0
+        )
+      )
       // Cool down a bit faster than default so the sim doesn't wobble forever.
       .alphaDecay(0.035)
       .velocityDecay(0.45);
@@ -629,6 +729,48 @@ function GraphPanelInner({
     });
   }, [rfEdges, scopedDelta]);
 
+  // Subject id -> display name, for hull labels. A subject's name is the name
+  // of its own node when that node is on the canvas; otherwise show a short id.
+  const subjectLabels = useMemo(() => {
+    const byId = new Map(visibleNodes.map((n) => [n.id, n.name] as const));
+    const labels = new Map<string, string>();
+    for (const n of visibleNodes) {
+      for (const s of n.subject_ids ?? []) {
+        if (s && !labels.has(s)) labels.set(s, byId.get(s) ?? `…${s.slice(-6)}`);
+      }
+    }
+    return labels;
+  }, [visibleNodes]);
+
+  // Subject-grouped hull regions (plan Phase 3): collect each subject's member
+  // node centers in flow coordinates from the live React Flow positions. Derived
+  // from rfNodes so hulls track the simulation as it settles and follow drags.
+  const hullGroups = useMemo<HullGroup[]>(() => {
+    if (subjectLabels.size === 0) return [];
+    const points = new Map<string, [number, number][]>();
+    for (const rn of rfNodes) {
+      const raw = (rn.data as { raw?: ERGraphNode }).raw;
+      const subs = raw?.subject_ids ?? [];
+      if (!subs.length) continue;
+      const cx = rn.position.x + NODE_HALF_W;
+      const cy = rn.position.y + NODE_HALF_H;
+      for (const s of subs) {
+        const arr = points.get(s);
+        if (arr) arr.push([cx, cy]);
+        else points.set(s, [[cx, cy]]);
+      }
+    }
+    const groups: HullGroup[] = [];
+    for (const [subjectId, pts] of points) {
+      groups.push({
+        subjectId,
+        label: subjectLabels.get(subjectId) ?? `…${subjectId.slice(-6)}`,
+        points: pts,
+      });
+    }
+    return groups;
+  }, [rfNodes, subjectLabels]);
+
   const [menu, setMenu] = useState<ContextMenuState>(null);
   const [hover, setHover] = useState<HoverState>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -701,6 +843,10 @@ function GraphPanelInner({
           size={1}
           color="var(--grid-line)"
         />
+        {/* Subject-grouped hull regions, behind the node layer (viewport-synced
+            via ViewportPortal). Hidden during time-travel so the pulse/dim
+            scope reads cleanly. */}
+        {!scopedDelta && <EntityHullOverlay groups={hullGroups} />}
         <Controls />
       </ReactFlow>
 

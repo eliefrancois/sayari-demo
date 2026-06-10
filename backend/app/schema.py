@@ -376,6 +376,14 @@ class GraphNode(BaseModel):
     # Which data system this node came from, for the graph legend. None on
     # legacy ICIJ nodes (treated as "icij" by the frontend).
     source_system: SourceSystem | None = None
+    # Subject-membership provenance for group-aware layout + hull regions: the
+    # resolved subject entity id(s) this node was attributed to. A node shared by
+    # two subjects (e.g. a shortest-path intermediary) carries both ids and lands
+    # in the overlap. Additive/optional — old stored graphs default to empty.
+    subject_ids: list[str] = Field(default_factory=list)
+    # The turn_id that first introduced this node (for new-this-turn pulse /
+    # provenance). None on legacy nodes and in non-persisted eval mode.
+    introduced_turn_id: str | None = None
     properties: dict = Field(default_factory=dict)
 
 

@@ -202,6 +202,29 @@ let thoughtCounter = 0;
 
 export const edgeKey = (e: GraphEdge) => `${e.source}::${e.type}::${e.target}`;
 
+/**
+ * Fold a node into the accumulating graph, UNIONING subject-membership across
+ * the turns/tools that emit it. The backend already unions on its stored graph,
+ * but a node can arrive on the wire more than once (e.g. a shortest-path
+ * intermediary first seen as a single-subject neighbor, later re-tagged with
+ * both endpoints), so the store must union too or hull membership would be
+ * pinned to whichever event landed first. Everything else takes the incoming
+ * (freshest) value; `introduced_turn_id` keeps the earliest known writer.
+ */
+export function mergeGraphNode(prev: GraphNode | undefined, next: GraphNode): GraphNode {
+  if (!prev) return next;
+  const subjectIds: string[] = [];
+  for (const sid of [...(prev.subject_ids ?? []), ...(next.subject_ids ?? [])]) {
+    if (sid && !subjectIds.includes(sid)) subjectIds.push(sid);
+  }
+  return {
+    ...prev,
+    ...next,
+    subject_ids: subjectIds,
+    introduced_turn_id: prev.introduced_turn_id ?? next.introduced_turn_id ?? null,
+  };
+}
+
 export function countExpandDelta(
   state: ConversationState,
   nodes: GraphNode[],
@@ -404,6 +427,9 @@ export function reduce(state: ConversationState, action: Action): ConversationSt
         if (!nodes.has(n.id)) {
           nodes.set(n.id, n);
           newIds.push(n.id);
+        } else {
+          // Already present: keep it, but union any new subject membership.
+          nodes.set(n.id, mergeGraphNode(nodes.get(n.id), n));
         }
       }
       for (const e of action.edges) {
@@ -546,7 +572,7 @@ function applyEvent(state: ConversationState, evt: StreamEvent): ConversationSta
     case "tool_call_result": {
       const nodes = new Map(state.nodes);
       const edges = new Map(state.edges);
-      for (const n of evt.data.nodes) if (!nodes.has(n.id)) nodes.set(n.id, n);
+      for (const n of evt.data.nodes) nodes.set(n.id, mergeGraphNode(nodes.get(n.id), n));
       for (const e of evt.data.edges) {
         const k = edgeKey(e);
         if (!edges.has(k)) edges.set(k, e);

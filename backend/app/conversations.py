@@ -866,6 +866,23 @@ async def get_graph(conversation_id: str) -> dict[str, list]:
         return json.loads(raw) if raw else {"nodes": [], "edges": []}
 
 
+def _merge_node(prev: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Fold an incoming node onto an existing one: the incoming fields win
+    (last-write freshest names/props), but `subject_ids` are UNIONED across
+    turns (so a node a later turn re-attributes to a second subject keeps its
+    original membership) and `introduced_turn_id` keeps the EARLIEST writer."""
+    merged = {**prev, **new}
+    seen: list[str] = []
+    for sid in (prev.get("subject_ids") or []) + (new.get("subject_ids") or []):
+        if sid and sid not in seen:
+            seen.append(sid)
+    merged["subject_ids"] = seen
+    merged["introduced_turn_id"] = (
+        prev.get("introduced_turn_id") or new.get("introduced_turn_id")
+    )
+    return merged
+
+
 def merge_graph_pure(
     graph: dict[str, list],
     nodes: list[dict[str, Any]],
@@ -873,10 +890,13 @@ def merge_graph_pure(
 ) -> dict[str, list]:
     """Pure graph union, deduped by node id / edge (source, type, target) triple.
     The exact transformation `merge_graph` persists; factored out so the path
-    graph assembler and the evals union deltas the same way production does."""
+    graph assembler and the evals union deltas the same way production does.
+    Node subject-membership is unioned (see `_merge_node`) rather than
+    last-write-wins so hull membership accumulates across turns."""
     by_id = {n["id"]: n for n in graph.get("nodes", [])}
     for n in nodes:
-        by_id[n["id"]] = n
+        prev = by_id.get(n["id"])
+        by_id[n["id"]] = _merge_node(prev, n) if prev is not None else n
     edge_keys = {
         f"{e['source']}::{e['type']}::{e['target']}": e for e in graph.get("edges", [])
     }

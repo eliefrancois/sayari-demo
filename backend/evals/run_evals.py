@@ -922,7 +922,8 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     4. parse_shortest_path: a sanctioned INTERMEDIATE hop sets
        has_sanctioned_intermediary; a path whose only sanctioned entity is the
        TARGET endpoint does not."""
-    from app import hs_screen, sayari
+    from app import conversations, hs_screen, sayari
+    from app.agent_graph import _tag_subject_membership
 
     hits = hs_screen.screen_hs_codes(["854231", "010101"])
     hs_fires = (
@@ -985,7 +986,14 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
         and map_routes[0]["top_parties"] == ["HK Importer"]
     )
 
-    # (4) Shortest path: sanctioned INTERMEDIATE -> flag; sanctioned TARGET only -> no flag.
+    # (4) Shortest path. The fixture uses the REAL Sayari shape: `path` holds
+    # only the INTERMEDIATE hops and the destination is a SEPARATE `target`
+    # field (NOT a final path hop). The old fixture put the target inside `path`,
+    # which masked the Phase 0 bug — the ownership replayer draws prev->hop edges,
+    # so when the target rode along as the last hop the closing edge appeared for
+    # free. With intermediates-only `path`, the last-hop -> target edge
+    # (mid-1 -> tgt-1, mirroring the real Roldugin -> Kerimov -> Gazprom case)
+    # only exists if shortest_path_to_neighborhood explicitly closes the chain.
     def sp_raw(mid_sanctioned: bool) -> dict:
         return {"data": [{
             "source": "src-1",
@@ -995,9 +1003,6 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
                 {"field": "shareholder_of",
                  "entity": {"id": "mid-1", "label": "Middleman", "type": "company",
                             "sanctioned": mid_sanctioned, "pep": False, "countries": ["CYP"]}},
-                {"field": "owner_of",
-                 "entity": {"id": "tgt-1", "label": "Target JSC", "type": "company",
-                            "sanctioned": True, "pep": False, "countries": ["RUS"]}},
             ],
         }]}
 
@@ -1013,6 +1018,65 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     nb = sayari.shortest_path_to_neighborhood(sp_raw(True), "src-1", "Clean Subject")
     nb_ok = {n.id for n in nb.nodes} == {"src-1", "mid-1", "tgt-1"} and any(
         n.id == "mid-1" and n.properties.get("sanctioned") for n in nb.nodes
+    )
+    # Phase 0 regression: the intermediary is NOT left a disconnected leaf — the
+    # closing mid-1 -> tgt-1 edge is present (the Kerimov -> Gazprom edge the old
+    # mapper dropped). Both legs of src-1 -> mid-1 -> tgt-1 must exist.
+    sp_edges = {(e.source, e.target) for e in nb.edges}
+    closing_edge_ok = ("src-1", "mid-1") in sp_edges and ("mid-1", "tgt-1") in sp_edges
+
+    # Phase 0 regression: an intermediate the raw result leaves unlabeled is named
+    # from the conversation-known id_lookup (no "(unnamed)" leaf). Roldugin ->
+    # Kerimov -> Gazprom: Kerimov arrives label-less from the API but we know it.
+    sp_unnamed = {"data": [{
+        "source": "src-1",
+        "target": {"id": "gazprom", "label": "Gazprom", "type": "company",
+                   "sanctioned": False, "pep": False, "countries": ["RUS"]},
+        "path": [
+            {"field": "shareholder_of",
+             "entity": {"id": "kerimov", "type": "person"}},  # NO label from API
+        ],
+    }]}
+    nb_named = sayari.shortest_path_to_neighborhood(
+        sp_unnamed, "src-1", "Roldugin",
+        id_lookup={"kerimov": {"label": "Suleiman Kerimov", "type": "person"}},
+    )
+    named_node = next((n for n in nb_named.nodes if n.id == "kerimov"), None)
+    named_ok = named_node is not None and named_node.name == "Suleiman Kerimov"
+
+    # Phase 1 regression: subject-membership attribution + union. A shortest_path
+    # turn tags the source to subject A only, the target to subject B only, and
+    # the INTERMEDIATE to BOTH — and merge_graph_pure UNIONS those across deltas
+    # rather than last-write-wins, so the shared node ends up in the A∩B overlap.
+    sp_nodes = [
+        {"id": "src-1", "label": "Entity", "name": "Roldugin", "subject_ids": []},
+        {"id": "kerimov", "label": "Officer", "name": "Kerimov", "subject_ids": []},
+        {"id": "gazprom", "label": "Entity", "name": "Gazprom", "subject_ids": []},
+    ]
+    _tag_subject_membership(
+        "sayari_shortest_path",
+        {"source_id": "src-1", "target_id": "gazprom"},
+        sp_nodes,
+        turn_id="t1",
+    )
+    tag_ok = (
+        sp_nodes[0]["subject_ids"] == ["src-1"]
+        and sorted(sp_nodes[1]["subject_ids"]) == ["gazprom", "src-1"]
+        and sp_nodes[2]["subject_ids"] == ["gazprom"]
+    )
+    # Union across turns: an earlier turn saw Kerimov as a plain neighbor of
+    # Roldugin (subject src-1); this turn re-attributes it to both endpoints.
+    prior = {"nodes": [
+        {"id": "kerimov", "label": "Officer", "name": "Kerimov",
+         "subject_ids": ["src-1"], "introduced_turn_id": "t0"},
+    ], "edges": []}
+    merged = conversations.merge_graph_pure(prior, sp_nodes, [])
+    merged_kerimov = next((n for n in merged["nodes"] if n["id"] == "kerimov"), None)
+    union_ok = (
+        merged_kerimov is not None
+        and sorted(merged_kerimov["subject_ids"]) == ["gazprom", "src-1"]
+        # earliest writer wins for provenance
+        and merged_kerimov["introduced_turn_id"] == "t0"
     )
 
     case = "tier2_trade"
@@ -1030,6 +1094,15 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
          f"mid_flag={flagged.has_sanctioned_intermediary}, target_only={clean_mid.has_sanctioned_intermediary}"),
         (case, "shortest_path_graph_nodes", nb_ok,
          f"nodes={sorted(n.id for n in nb.nodes)}"),
+        (case, "shortest_path_closing_edge", closing_edge_ok,
+         f"edges={sorted(sp_edges)}"),
+        (case, "shortest_path_intermediate_named", named_ok,
+         f"kerimov_name={named_node.name if named_node else None}"),
+        (case, "shortest_path_subject_attribution", tag_ok,
+         f"subjects={[n['subject_ids'] for n in sp_nodes]}"),
+        (case, "shared_node_subject_ids_union", union_ok,
+         f"kerimov_subjects={sorted(merged_kerimov['subject_ids']) if merged_kerimov else None}, "
+         f"introduced={merged_kerimov['introduced_turn_id'] if merged_kerimov else None}"),
     ]
 
 
