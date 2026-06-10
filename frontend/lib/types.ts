@@ -37,6 +37,12 @@ export interface GraphEdge {
   target: string;
   type: string;
   source_system?: SourceSystem | null;
+  /**
+   * Optional edge metadata (mirrors backend GraphEdge.properties). Tier 2
+   * "ships_to" trade edges carry kind/hs_codes/value/last_date/dual_use here;
+   * empty or absent on ownership/sanctions/ICIJ edges.
+   */
+  properties?: Record<string, unknown> | null;
 }
 
 /**

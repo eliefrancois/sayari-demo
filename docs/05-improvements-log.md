@@ -8,6 +8,42 @@ Newest first. Each entry tries to cover three things: what I changed, why the ol
 
 ---
 
+## 2026-06-09: Tier 2b, the risky-routes map
+
+The deferred half of Tier 2: shipment lanes drawn on a world map. The graph already shows WHO ships to whom; the map shows WHERE the goods physically flow, which is the lens an export-control analyst flips to when the question is "does this supply chain route through somewhere I care about."
+
+The geography problem first, because it shaped the design. Sayari shipments carry ISO-3 country codes and port/city name strings but no usable coordinates (the address x/y fields exist in the schema and are null in practice). react-simple-maps needs [lng, lat]. So the map runs on a bundled static asset: `frontend/lib/map/country-centroids.json`, an ISO3 to [lng, lat] centroid table. Country-level arcs are the deliverable; port-level (UN/LOCODE parsed out of strings like "SIKKA PORT (INSIK1)") stays a stretch goal and was not built.
+
+Data flow is deliberately thin. Backend-side, `sayari.shipments_to_routes()` aggregates a trade result into a compact `metadata.routes` array, one row per (departure_country, arrival_country) pair: shipment_count, total_value, dual_use, sanctioned_party, top HS codes. That rides the existing tool_call_result SSE event, no new event types. Frontend-side, `lib/map/trade-routes.ts` collects routes across turns, takes the LATEST result per (entity_id, role) query so re-asking the same trade question replaces instead of double-counting, and merges lanes by country pair. After a page reload (hydration restores the graph but not tool calls) it falls back to deriving coarse routes from the persisted `ships_to` edges using each party node's country, so the map survives a refresh with slightly less precision.
+
+The component (`frontend/components/TradeRoutesMap.tsx`) is react-simple-maps in the basic-markers style the user pointed at: world topojson from `frontend/public/maps/countries-110m.json`, arcs between centroids, markers at endpoints. Color is the same risk language as the graph: red when a lane has a directly sanctioned party, amber when the dual-use screen or a native BIS tag fired, neutral zinc otherwise. Stroke width scales with shipment count (log so a busy lane does not blot out the map), opacity with lane value. It surfaces as a Graph | Map toggle on the right panel rather than a fourth panel. The whole thing is self-contained (own component plus `lib/map/` assets) on purpose: the lmcanvas reskin lands next and should be able to restyle it without surgery.
+
+Status: done. Backend redeployed as `sayari-demo-backend-00033-lh4` (the routes aggregation rides the trade tool result), `/health` 200, `agent_impl=graph`. Demo flow: ask "What does JSC Mikron ship, and is any of it dual-use?", then flip the right panel to Map; the dual-use lanes render amber.
+
+Files: `backend/app/sayari.py` (`shipments_to_routes`), `backend/evals/run_evals.py` (routes check); `frontend/components/TradeRoutesMap.tsx` (new), `frontend/lib/map/trade-routes.ts` + `country-centroids.json` (new), `frontend/public/maps/countries-110m.json` (new), `frontend/components/EntityResolverApp.tsx` (toggle), `package.json` (react-simple-maps).
+
+---
+
+## 2026-06-09: Tier 2 core, trade and supply-chain risk
+
+This tier takes the agent from "who owns X" to "what does X actually ship, to whom, and is any of it dual-use." Two new Sayari surfaces: trade (real shipments) and shortest path (the relationship chain between two entities). Together they answer the question an export-control analyst actually has: my counterparty screens clean, but does its supply chain route through someone who doesn't?
+
+What I built, data layer first. `sayari.py` gained `trade_shipments(entity_id, role)` (supplier or buyer, via `trade.search_shipments` with a `TradeFilterList`) and `shortest_path(source_id, target_id)` (via `traversal.shortest_path`). The slimming discipline is the same one the risk map taught us: we fetch a bounded page of shipments, keep the top ~20 by value and date for the model and the graph, and aggregate everything else into facets (counts, total value, top HS codes, top arrival countries). A raw trade party can carry 50-70 name aliases; we keep `names[0]` plus a count, exactly like the existing tools. Shipments on the same supplier-to-buyer lane aggregate into ONE `ships_to` graph edge with summed value, unioned HS codes, and the latest date, so a busy lane is one readable edge, not twenty overlapping ones.
+
+The dual-use screen is the part worth explaining, because it is two signals with two different owners. Sayari ships HS codes on every shipment but has no per-code dual-use flag. So I bundled a curated reference list, the BIS/E5 Common High Priority List, as a static JSON asset at `backend/app/data/hs_dual_use.json`, and `hs_screen.py` screens every shipment's 6-digit codes against it. That is OUR signal, provenance "hs_screen". Separately, Sayari's own party `risks` dict carries native export-control tags (`exports_bis_high_priority_items_*`, `controlled_by_bis_meu`, and friends), and `native_bis_tags()` lifts those out. That is SAYARI'S signal, provenance "sayari_bis_tag". A shipment is dual_use when either fires, but the tool result keeps the two lists separate and the prompt tells the agent to report which one fired. Blurring "our screen matched the HS code" with "Sayari tagged the party" would be exactly the provenance sloppiness the rest of this product exists to prevent. The JSON asset is versioned and structured so a second list (EU dual-use Annex I, say) can be appended later with its own list id without touching the screen logic.
+
+Shortest path got the same treatment as the other traversals: the response shape ({source, target, path}) matches ownership, so `shortest_path_to_neighborhood()` reuses the existing path replayer and then folds in the `target` EntityDetails as a properly named endpoint node. The headline field is `has_sanctioned_intermediary`, which fires only when an INTERMEDIATE hop is directly sanctioned, not when an endpoint is. The endpoints' own status is already visible on their nodes; the intermediary is the thing you'd miss.
+
+Two new tools ride the existing pattern end to end: `sayari_trade` and `sayari_shortest_path` are async wrappers over `asyncio.to_thread`, registered in the dispatcher, bound through `tools_lc.py` for free, routed by a new `trade_supply_chain` intent (plus `sayari_shortest_path` joining the ownership and sanctions intents), and described carefully because descriptions are where tool selection actually happens. The frontend renders `ships_to` edges dashed fuchsia with a legend entry, flips them amber with a "dual-use" label when the lane screened dirty, badges dual-use parties, and rings sanctioned nodes red so a sanctioned intermediary on a path is visible at a glance. Deliberately functional-minimal styling: the lmcanvas reskin is next, so nothing here is polish that would get redone.
+
+Verification: five new deterministic eval checks (`tier2_trade`) pin the mappers with fixtures, no API spend: the HS screen fires on a CHPL code and stays quiet on a benign one, a native BIS tag flags a shipment even with clean HS codes, lanes aggregate correctly, and the sanctioned-intermediary flag fires on a sanctioned middle hop but NOT when only the target is sanctioned.
+
+Deferred: the geographic routes map (shipment departure/transit/arrival rendered on a map) is a separate follow-up, not part of this core.
+
+Files: `backend/app/sayari.py`, `schema.py`, `hs_screen.py` (new), `data/hs_dual_use.json` (new), `tools.py`, `tools_lc.py`, `intent.py`, `prompts.py`, `agent_common.py`, `evals/run_evals.py`; `frontend/lib/types.ts`, `components/GraphPanel.tsx`.
+
+---
+
 ## 2026-06-08: Provenance re-citation + the multi-turn safety net (IMS Phases E and F)
 
 These two phases finish the Investigation Memory Subsystem. With E and F done, A through F are complete. D (episodic vector) stays flag-off until someone provisions an Upstash Vector index, but everything that actually fixes recall fidelity is now in and locked down by tests.

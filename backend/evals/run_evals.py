@@ -860,6 +860,128 @@ def _source_enum_rows() -> list[tuple[str, str, bool, str]]:
     ]
 
 
+def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
+    """Deterministic Tier 2 (trade + supply-chain) regression: the dual-use HS
+    screen and the shortest-path sanctioned-intermediary flag, asserted on the
+    pure mappers (no API spend, no flakes).
+
+    1. hs_screen: a CHPL-listed HS code (854231, integrated circuits) must fire
+       with provenance 'hs_screen'; a benign code (010101, live horses) must not.
+    2. slim_shipment: a shipment with NO HS hit but a party carrying a native
+       Sayari BIS tag must still screen dual_use=True (the two signals are OR'd,
+       provenance kept distinct).
+    3. shipments_to_trade_edges: shipments on the same supplier->buyer lane
+       aggregate into ONE ships_to edge (summed value, latest date, dual_use if
+       any shipment flagged).
+    4. parse_shortest_path: a sanctioned INTERMEDIATE hop sets
+       has_sanctioned_intermediary; a path whose only sanctioned entity is the
+       TARGET endpoint does not."""
+    from app import hs_screen, sayari
+
+    hits = hs_screen.screen_hs_codes(["854231", "010101"])
+    hs_fires = (
+        len(hits) == 1
+        and hits[0]["code"] == "854231"
+        and hits[0]["provenance"] == "hs_screen"
+    )
+
+    def ship(hs_code: str, supplier_risks: dict, value: float, date: str) -> dict:
+        return {
+            "id": f"ship-{hs_code}-{date}",
+            "supplier": [{"id": "sup-1", "type": "company", "names": ["Acme Export"],
+                          "risks": supplier_risks, "countries": ["RUS"]}],
+            "buyer": [{"id": "buy-1", "type": "company", "names": ["HK Importer"],
+                       "risks": {}, "countries": ["HKG"]}],
+            "hs_codes": [{"code": hs_code, "description": "x", "imputed": False}],
+            "monetary_value": [{"value": value, "currency": "USD", "context": "shipment"}],
+            "departure_country": ["RUS"], "arrival_country": ["HKG"],
+            "departure_date": date,
+        }
+
+    # (2) Benign HS code + native BIS tag on the supplier -> still dual_use.
+    s_native = sayari.slim_shipment(
+        ship("010101", {"exports_bis_high_priority_items_critical": {}}, 100.0, "2024-01-01")
+    )
+    native_fires = (
+        s_native.dual_use
+        and not s_native.dual_use_hits  # no HS hit — the NATIVE signal fired
+        and s_native.supplier is not None
+        and s_native.supplier.bis_tags == ["exports_bis_high_priority_items_critical"]
+    )
+
+    # (3) Lane aggregation: two shipments, one lane, dual_use from the HS hit.
+    s_hs = sayari.slim_shipment(ship("854231", {}, 250.0, "2024-02-02"))
+    lanes = sayari.shipments_to_trade_edges([s_hs, s_native])
+    lane_ok = (
+        len(lanes) == 1
+        and lanes[0].type == "ships_to"
+        and lanes[0].shipment_count == 2
+        and lanes[0].value == 350.0
+        and lanes[0].last_date == "2024-02-02"
+        and lanes[0].dual_use
+    )
+
+    # (3b) Map routes: the same two shipments aggregate into ONE RUS->HKG
+    # country-pair route (count 2, summed value, dual_use carried through).
+    map_routes = sayari.shipments_to_routes([s_hs, s_native])
+    routes_ok = (
+        len(map_routes) == 1
+        and map_routes[0]["departure_country"] == "RUS"
+        and map_routes[0]["arrival_country"] == "HKG"
+        and map_routes[0]["shipment_count"] == 2
+        and map_routes[0]["total_value"] == 350.0
+        and map_routes[0]["dual_use"]
+        and not map_routes[0]["sanctioned_party"]
+    )
+
+    # (4) Shortest path: sanctioned INTERMEDIATE -> flag; sanctioned TARGET only -> no flag.
+    def sp_raw(mid_sanctioned: bool) -> dict:
+        return {"data": [{
+            "source": "src-1",
+            "target": {"id": "tgt-1", "label": "Target JSC", "type": "company",
+                       "sanctioned": True, "pep": False, "countries": ["RUS"]},
+            "path": [
+                {"field": "shareholder_of",
+                 "entity": {"id": "mid-1", "label": "Middleman", "type": "company",
+                            "sanctioned": mid_sanctioned, "pep": False, "countries": ["CYP"]}},
+                {"field": "owner_of",
+                 "entity": {"id": "tgt-1", "label": "Target JSC", "type": "company",
+                            "sanctioned": True, "pep": False, "countries": ["RUS"]}},
+            ],
+        }]}
+
+    flagged = sayari.parse_shortest_path(sp_raw(True), "src-1", "tgt-1")
+    clean_mid = sayari.parse_shortest_path(sp_raw(False), "src-1", "tgt-1")
+    sp_ok = (
+        flagged.found
+        and flagged.has_sanctioned_intermediary
+        and clean_mid.found
+        and not clean_mid.has_sanctioned_intermediary
+    )
+    # The graph mapper folds in the named target endpoint + the sanctioned mid.
+    nb = sayari.shortest_path_to_neighborhood(sp_raw(True), "src-1", "Clean Subject")
+    nb_ok = {n.id for n in nb.nodes} == {"src-1", "mid-1", "tgt-1"} and any(
+        n.id == "mid-1" and n.properties.get("sanctioned") for n in nb.nodes
+    )
+
+    case = "tier2_trade"
+    return [
+        (case, "hs_screen_dual_use_fires", hs_fires,
+         f"hits={[h['code'] for h in hits]}"),
+        (case, "native_bis_tag_fires", native_fires,
+         f"dual_use={s_native.dual_use}, hs_hits={len(s_native.dual_use_hits)}"),
+        (case, "trade_lane_aggregation", lane_ok,
+         f"lanes={len(lanes)}, count={lanes[0].shipment_count if lanes else 0}"),
+        (case, "map_route_aggregation", routes_ok,
+         f"routes={len(map_routes)}, "
+         f"pair={(map_routes[0]['departure_country'], map_routes[0]['arrival_country']) if map_routes else None}"),
+        (case, "sanctioned_intermediary_flag", sp_ok,
+         f"mid_flag={flagged.has_sanctioned_intermediary}, target_only={clean_mid.has_sanctioned_intermediary}"),
+        (case, "shortest_path_graph_nodes", nb_ok,
+         f"nodes={sorted(n.id for n in nb.nodes)}"),
+    ]
+
+
 async def _episodic_disabled_rows() -> list[tuple[str, str, bool, str]]:
     """Deterministic Phase D regression (doc 09 §D): the GRACEFUL NO-OP contract
     of L2 episodic vector memory when it is DISABLED (the default, and how the
@@ -1021,6 +1143,7 @@ async def _run_local() -> int:
         ("injection_shrink", _injection_shrink_rows),
         ("recap_routing", _recap_routing_rows),
         ("source_enum", _source_enum_rows),
+        ("tier2_trade", _tier2_trade_rows),
     ):
         try:
             for r in fn():

@@ -47,6 +47,7 @@ _INTENT_TOOLS: dict[str, list[str]] = {
         "sayari_profile",
         "sayari_ownership",
         "sayari_summary",
+        "sayari_shortest_path",
         "recall_state",
         "recall_memory",
     ],
@@ -54,7 +55,18 @@ _INTENT_TOOLS: dict[str, list[str]] = {
         "sayari_resolve",
         "sayari_profile",
         "sayari_watchlist",
+        "sayari_shortest_path",
         "check_sanctions",
+    ],
+    "trade_supply_chain": [
+        "sayari_resolve",
+        "sayari_profile",
+        "sayari_trade",
+        "sayari_shortest_path",
+        "sayari_summary",
+        "check_sanctions",
+        "recall_state",
+        "recall_memory",
     ],
     "provenance": [
         "sayari_resolve",
@@ -102,6 +114,14 @@ _GUIDANCE: dict[str, str] = {
     "provenance": (
         "Provenance turn: trace the source. Use sayari_record for document-level "
         "evidence behind a fact, and search_entity for ICIJ leak provenance."
+    ),
+    "trade_supply_chain": (
+        "Trade/supply-chain turn: resolve the subject, then sayari_trade "
+        "(role='supplier' for exports, 'buyer' for imports). Report the dual-use "
+        "screen with provenance: our HS screen (BIS/E5 CHPL) vs Sayari's native "
+        "BIS tags — never blur the two. For 'how is X connected to Y', resolve "
+        "BOTH ids then sayari_shortest_path; if has_sanctioned_intermediary is "
+        "true, NAME the sanctioned intermediary explicitly."
     ),
     "broad_search": (
         "Broad/lead-gen turn: sayari_search to cast a wide net, then resolve+profile "
@@ -164,8 +184,10 @@ _CLASSIFY_TOOL = {
                 "enum": _INTENTS,
                 "description": (
                     "identify_entity: who/what is X. profile_entity: risk profile of "
-                    "X. ownership_network: who owns / what does X control. "
-                    "sanctions_screening: sanctions/PEP exposure (direct or indirect). "
+                    "X. ownership_network: who owns / what does X control / how is X "
+                    "connected to Y. sanctions_screening: sanctions/PEP exposure "
+                    "(direct or indirect). trade_supply_chain: shipments, exports/"
+                    "imports, trade counterparties, dual-use goods, supply-chain risk. "
                     "provenance: source/document/evidence behind a fact or leak "
                     "presence. broad_search: vague/exploratory lead-gen with no single "
                     "subject. conversational_followup: greeting, meta, or a narrow "

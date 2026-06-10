@@ -1,0 +1,63 @@
+{
+  "_about": "Curated dual-use HS reference list bundled as a STATIC ASSET. Sayari exposes no per-HS-code dual-use flag, so we screen shipment HS codes against this list locally and label hits 'our HS screen'. This is the BIS/E5 Common High Priority List (CHPL) of 6-digit HS codes flagged by the US (BIS), EU, UK, Japan, Canada, Australia, and New Zealand as critical to Russian weapons systems. It is intentionally structured so a second list (e.g. EU dual-use Annex I) can be appended later with its own `list` id without touching the screen logic. Reconcile against the official published CHPL before any production use.",
+  "version": "2024-05-13",
+  "sources": [
+    {
+      "id": "BIS_CHPL",
+      "label": "BIS / E5 Common High Priority List",
+      "url": "https://www.bis.gov/licensing/country-guidance/common-high-priority-items-list-chpl",
+      "as_of": "2024-05-13"
+    }
+  ],
+  "codes": [
+    {"code": "854231", "tier": "1", "list": "BIS_CHPL", "description": "Electronic integrated circuits: processors and controllers"},
+    {"code": "854232", "tier": "1", "list": "BIS_CHPL", "description": "Electronic integrated circuits: memories"},
+    {"code": "854233", "tier": "1", "list": "BIS_CHPL", "description": "Electronic integrated circuits: amplifiers"},
+    {"code": "854239", "tier": "1", "list": "BIS_CHPL", "description": "Electronic integrated circuits: other (incl. FPGAs)"},
+
+    {"code": "851762", "tier": "2", "list": "BIS_CHPL", "description": "Machines for reception/conversion/transmission of voice, images or data, incl. switching and routing apparatus"},
+    {"code": "852691", "tier": "2", "list": "BIS_CHPL", "description": "Radio navigational aid apparatus"},
+    {"code": "853221", "tier": "2", "list": "BIS_CHPL", "description": "Fixed capacitors: tantalum"},
+    {"code": "853224", "tier": "2", "list": "BIS_CHPL", "description": "Fixed capacitors: ceramic dielectric, multilayer"},
+    {"code": "854800", "tier": "2", "list": "BIS_CHPL", "description": "Electrical parts of machinery or apparatus not specified elsewhere in chapter 85"},
+
+    {"code": "847150", "tier": "3.A", "list": "BIS_CHPL", "description": "Processing units (other than 8471.41/8471.49)"},
+    {"code": "850440", "tier": "3.A", "list": "BIS_CHPL", "description": "Static converters (rectifiers, etc.)"},
+    {"code": "851769", "tier": "3.A", "list": "BIS_CHPL", "description": "Other apparatus for transmission/reception of voice, images or data"},
+    {"code": "852589", "tier": "3.A", "list": "BIS_CHPL", "description": "Television cameras, digital cameras and video camera recorders"},
+    {"code": "852910", "tier": "3.A", "list": "BIS_CHPL", "description": "Antennas and antenna reflectors of all kinds"},
+    {"code": "852990", "tier": "3.A", "list": "BIS_CHPL", "description": "Parts for apparatus of headings 8524-8528: other"},
+    {"code": "853669", "tier": "3.A", "list": "BIS_CHPL", "description": "Coaxial / multicontact / PCB / ribbon connectors; other"},
+    {"code": "853690", "tier": "3.A", "list": "BIS_CHPL", "description": "Electrical apparatus for switching/protecting circuits: other"},
+    {"code": "854110", "tier": "3.A", "list": "BIS_CHPL", "description": "Diodes, other than photosensitive or LED"},
+    {"code": "854121", "tier": "3.A", "list": "BIS_CHPL", "description": "Transistors, other than photosensitive, dissipation < 1W"},
+    {"code": "854129", "tier": "3.A", "list": "BIS_CHPL", "description": "Transistors, other than photosensitive, not elsewhere specified"},
+    {"code": "854130", "tier": "3.A", "list": "BIS_CHPL", "description": "Thyristors, diacs and triacs (excl. photosensitive)"},
+    {"code": "854149", "tier": "3.A", "list": "BIS_CHPL", "description": "Photosensitive semiconductor devices (excl. photovoltaic)"},
+    {"code": "854151", "tier": "3.A", "list": "BIS_CHPL", "description": "Semiconductor-based transducers"},
+    {"code": "854159", "tier": "3.A", "list": "BIS_CHPL", "description": "Semiconductor devices not elsewhere specified"},
+    {"code": "854160", "tier": "3.A", "list": "BIS_CHPL", "description": "Mounted piezo-electric crystals"},
+
+    {"code": "848210", "tier": "3.B", "list": "BIS_CHPL", "description": "Ball bearings"},
+    {"code": "848220", "tier": "3.B", "list": "BIS_CHPL", "description": "Tapered roller bearings"},
+    {"code": "848230", "tier": "3.B", "list": "BIS_CHPL", "description": "Spherical roller bearings"},
+    {"code": "848250", "tier": "3.B", "list": "BIS_CHPL", "description": "Other cylindrical roller bearings"},
+    {"code": "880730", "tier": "3.B", "list": "BIS_CHPL", "description": "Other parts of airplanes, helicopters or unmanned aircraft"},
+    {"code": "901310", "tier": "3.B", "list": "BIS_CHPL", "description": "Telescopic sights for arms; periscopes; telescopes for machines"},
+    {"code": "901380", "tier": "3.B", "list": "BIS_CHPL", "description": "Other optical devices, appliances and instruments"},
+    {"code": "901420", "tier": "3.B", "list": "BIS_CHPL", "description": "Instruments for aeronautical or space navigation (other than compasses)"},
+    {"code": "901480", "tier": "3.B", "list": "BIS_CHPL", "description": "Other navigational instruments and appliances"},
+
+    {"code": "847180", "tier": "4.A", "list": "BIS_CHPL", "description": "Units for automatic data-processing machines (other than processing/IO/storage)"},
+    {"code": "848610", "tier": "4.A", "list": "BIS_CHPL", "description": "Machines and apparatus for the manufacture of boules or wafers"},
+    {"code": "848620", "tier": "4.A", "list": "BIS_CHPL", "description": "Machines for the manufacture of semiconductor devices or integrated circuits"},
+    {"code": "848640", "tier": "4.A", "list": "BIS_CHPL", "description": "Machines for masks/reticles, assembling/handling of semiconductor devices"},
+    {"code": "853400", "tier": "4.A", "list": "BIS_CHPL", "description": "Printed circuits"},
+    {"code": "854320", "tier": "4.A", "list": "BIS_CHPL", "description": "Signal generators"},
+    {"code": "902750", "tier": "4.A", "list": "BIS_CHPL", "description": "Instruments using optical radiations (UV, visible, infrared)"},
+    {"code": "903020", "tier": "4.A", "list": "BIS_CHPL", "description": "Oscilloscopes and oscillographs"},
+    {"code": "903032", "tier": "4.A", "list": "BIS_CHPL", "description": "Multimeters with recording device"},
+    {"code": "903039", "tier": "4.A", "list": "BIS_CHPL", "description": "Instruments for measuring voltage/current/resistance/power, with recording device"},
+    {"code": "903082", "tier": "4.A", "list": "BIS_CHPL", "description": "Instruments for measuring/checking semiconductor wafers or devices"}
+  ]
+}

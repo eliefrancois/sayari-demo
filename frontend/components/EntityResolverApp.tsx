@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useReducer, useRef, useState } from "react";
+import { useCallback, useMemo, useReducer, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { ChatPanel } from "./ChatPanel";
 import { ExpandToast } from "./ExpandToast";
 import { GraphPanel } from "./GraphPanel";
+import { TradeRoutesMap } from "./TradeRoutesMap";
 import { ToolCallFeed } from "./ToolCallFeed";
 import {
   activeTurn,
@@ -20,7 +21,11 @@ import {
   streamTurn,
   type TurnHandle,
 } from "@/lib/sse-client";
+import { collectTradeRoutes } from "@/lib/map/trade-routes";
 import type { ExpandKind, NodeLabel } from "@/lib/types";
+
+/** Which lens the center panel shows: the React Flow graph or the routes map. */
+type CenterView = "graph" | "map";
 
 /**
  * Top-level client component. Owns:
@@ -36,6 +41,14 @@ export function EntityResolverApp() {
   const handleRef = useRef<TurnHandle | null>(null);
   const [expandToast, setExpandToast] = useState<string | null>(null);
   const [hiddenLabels, setHiddenLabels] = useState<Set<NodeLabel>>(new Set());
+  const [centerView, setCenterView] = useState<CenterView>("graph");
+
+  // Trade routes for the map lens, derived from sayari_trade results already
+  // in the conversation (tool-result metadata, with a graph-edge fallback).
+  const tradeRoutes = useMemo(
+    () => collectTradeRoutes(state.turns, state.nodes, state.edges),
+    [state.turns, state.nodes, state.edges]
+  );
 
   const toggleLabel = useCallback((label: NodeLabel) => {
     setHiddenLabels((prev) => {
@@ -99,6 +112,7 @@ export function EntityResolverApp() {
   const resetAll = useCallback(() => {
     handleRef.current?.close();
     handleRef.current = null;
+    setCenterView("graph");
     dispatch({ type: "reset" });
   }, []);
 
@@ -159,15 +173,20 @@ export function EntityResolverApp() {
         />
       </aside>
 
-      {/* Center: graph */}
+      {/* Center: graph (with a map lens overlay for trade routes) */}
       <main className="relative flex min-h-0 flex-col">
         <GraphHeader
           state={state}
           onReset={resetAll}
           hiddenLabels={hiddenLabels}
           onToggleLabel={toggleLabel}
+          view={centerView}
+          onViewChange={setCenterView}
+          routeCount={tradeRoutes.length}
         />
         <div className="relative flex-1 min-h-0">
+          {/* GraphPanel stays mounted under the map so the force layout and
+              user-dragged positions survive flipping lenses. */}
           <GraphPanel
             nodes={nodes}
             edges={edges}
@@ -183,6 +202,11 @@ export function EntityResolverApp() {
             showOverlayLeads={state.showUnpinnedLeads}
             onToggleLeads={toggleLeadsOverlay}
           />
+          {centerView === "map" && (
+            <div className="absolute inset-0 z-10">
+              <TradeRoutesMap routes={tradeRoutes} />
+            </div>
+          )}
           <ExpandToast message={expandToast} onDismiss={() => setExpandToast(null)} />
         </div>
       </main>
@@ -208,11 +232,17 @@ function GraphHeader({
   onReset,
   hiddenLabels,
   onToggleLabel,
+  view,
+  onViewChange,
+  routeCount,
 }: {
   state: ConversationState;
   onReset: () => void;
   hiddenLabels: Set<NodeLabel>;
   onToggleLabel: (label: NodeLabel) => void;
+  view: CenterView;
+  onViewChange: (view: CenterView) => void;
+  routeCount: number;
 }) {
   const n = state.nodes.size;
   const e = state.edges.size;
@@ -254,6 +284,36 @@ function GraphHeader({
         </div>
       </div>
       <div className="flex items-center gap-3">
+        {/* Graph | Map lens toggle. The map is a flip-to lens for trade
+            routes, so it never crowds the React Flow canvas. */}
+        <div className="flex items-center overflow-hidden rounded border border-zinc-700 text-[11px]">
+          {(["graph", "map"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => onViewChange(v)}
+              title={v === "map" ? "Trade routes on a world map" : "Network graph"}
+              className={
+                "px-2 py-1 transition " +
+                (view === v
+                  ? "bg-zinc-700 text-zinc-100"
+                  : "bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")
+              }
+            >
+              {v === "graph" ? "Graph" : "Map"}
+              {v === "map" && routeCount > 0 && (
+                <span
+                  className={
+                    "ml-1 rounded-full px-1 text-[9px] tabular-nums " +
+                    (view === "map" ? "bg-zinc-600 text-zinc-200" : "bg-fuchsia-500/20 text-fuchsia-300")
+                  }
+                >
+                  {routeCount}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
         <span className="text-[11px] tabular-nums text-zinc-500">
           {n} node{n === 1 ? "" : "s"} · {e} edge{e === 1 ? "" : "s"}
         </span>

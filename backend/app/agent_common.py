@@ -686,6 +686,19 @@ def short_summary(tool_name: str, parsed: dict[str, Any]) -> str:
         n = len(parsed.get("nodes", []))
         paths = parsed.get("paths", 0)
         return f"{paths} watchlist path{'s' if paths != 1 else ''}, {n} nodes"
+    if tool_name == "sayari_trade":
+        shown = parsed.get("shown_shipments", 0)
+        total = (parsed.get("facets") or {}).get("shipment_count", shown)
+        du = parsed.get("dual_use_screen") or {}
+        tag = f" — {du.get('shipments_flagged')} DUAL-USE" if du.get("any") else ""
+        return f"{shown} of {total} shipments ({parsed.get('role', '')}){tag}"
+    if tool_name == "sayari_shortest_path":
+        p = parsed.get("path") or {}
+        if not p.get("found"):
+            return "no path found"
+        hops = len(p.get("hops") or [])
+        tag = " — SANCTIONED INTERMEDIARY" if p.get("has_sanctioned_intermediary") else ""
+        return f"path found: {hops} hop{'s' if hops != 1 else ''}{tag}"
     if tool_name == "sayari_record":
         rec = parsed.get("record") or {}
         docs = len(rec.get("document_urls") or [])

@@ -6,6 +6,20 @@ Mockup: `~/.cursor/projects/Users-efrancois-Desktop-Projects-unicover/assets/tie
 
 ---
 
+## 0. Confirmed scope (locked 2026-06-08)
+
+These decisions are final and override anything looser below.
+
+- **Goal:** make the whole app look and feel like lmcanvas. The current sayari UI is being replaced, not augmented.
+- **Scope:** FULL-APP reskin. Every surface (entry, investigation UI, all panels) adopts the lmcanvas design language.
+- **Component reuse:** lift as many lmcanvas components as possible (card, `OffsetEdge`, tool-call blocks, grid background, fork hooks, motion) and adapt only at the seam where they meet sayari's SSE stream and conversation store. Code donor is the real app at `/Users/efrancois/Desktop/Projects/local-lmcanvas` (MIT licensed, React 19 + `@xyflow/react`, same canvas lib we use). The marketing mock at `local-lmcanvas-web` is visual reference only.
+- **Theme:** light default, Geist fonts (Variable / Mono / Pixel), OKLCH token set. Token-driven so a dark variant is a later swap.
+- **Color:** functional accents only. The chrome stays neutral lmcanvas grayscale; the ONLY color is risk severity (glow / fill) and source (ring / dot) per section 2.
+- **Layout:** the branching canvas is the PRIMARY UI. Tool calls render INSIDE the branch cards (lmcanvas pattern), so the separate Tool Feed panel is removed. Split-pane stays: Investigation tree (left) and Evidence graph (right, existing React Flow restyled).
+- **Sequencing:** start only after the Tier 2 build lands. Both touch `GraphPanel`, `types`, and `schema`, so running them at once would collide.
+
+---
+
 ## 1. Design language (borrowed from lmcanvas)
 
 - **Type:** Geist Variable (sans) for body, Geist Mono for all metadata/labels (uppercase, tracked, 8-11px), optional Geist Pixel Square for the model/route chip accent only.

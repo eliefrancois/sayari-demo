@@ -34,7 +34,7 @@ def _to_openai_function(tool: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# The investigation tools (6 ICIJ/OpenSanctions + 7 Sayari).
+# The investigation tools (6 ICIJ/OpenSanctions + 9 Sayari + 2 recall).
 INVESTIGATION_TOOLS_LC: list[dict[str, Any]] = [_to_openai_function(t) for t in TOOLS]
 
 # The two terminators.

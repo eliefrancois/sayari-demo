@@ -30,6 +30,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from app import hs_screen
 from app.config import get_settings
 from app.schema import (
     GraphEdge,
@@ -37,6 +38,11 @@ from app.schema import (
     Neighborhood,
     SayariCandidate,
     SayariSearchCandidate,
+    SayariShipment,
+    SayariShortestPath,
+    SayariShortestPathHop,
+    SayariTradeEdge,
+    SayariTradeParty,
 )
 
 # Hard caps on traversal breadth/depth. Sayari traversals bill per explored
@@ -46,6 +52,16 @@ _MAX_TRAVERSAL_LIMIT = 40
 _MAX_WATCHLIST_LIMIT = 15
 _MAX_DEPTH = 4
 _MAX_SEARCH_LIMIT = 20
+
+# Trade slimming (Tier 2). We pull a bounded page of shipments, keep the top-N by
+# value/recency for the model + graph, and aggregate the rest into facets so trade
+# data never floods the model or the canvas (the same slimming discipline as the
+# risk map). _TRADE_FETCH is the page we ask Sayari for; _TRADE_KEEP is the slice
+# that becomes shipment rows + graph edges.
+_TRADE_FETCH_LIMIT = 50
+_TRADE_KEEP = 20
+_TRADE_MAX_KEEP = 25
+_TRADE_MIN_KEEP = 15
 
 # Bounded naming for hub-entity risk paths. A hub (e.g. Gazprom) has multi-hop
 # risk paths far wider than the 1-hop relationships block, so most path nodes
@@ -685,7 +701,396 @@ def risk_paths_to_neighborhood(
     )
 
 
-def _add_edge(edges: dict[str, GraphEdge], src: str, tgt: str, rel: str) -> None:
+def _add_edge(
+    edges: dict[str, GraphEdge],
+    src: str,
+    tgt: str,
+    rel: str,
+    properties: dict[str, Any] | None = None,
+) -> None:
     key = f"{src}::{rel}::{tgt}"
     if key not in edges:
-        edges[key] = GraphEdge(source=src, target=tgt, type=rel, source_system="sayari")
+        edges[key] = GraphEdge(
+            source=src,
+            target=tgt,
+            type=rel,
+            source_system="sayari",
+            properties=properties or {},
+        )
+
+
+# --- Tier 2: trade (shipments) ----------------------------------------------
+
+
+def trade_shipments(
+    entity_id: str, role: str = "supplier", limit: int = _TRADE_FETCH_LIMIT
+) -> dict[str, Any]:
+    """Search Sayari shipments where `entity_id` is the supplier (default) or
+    the buyer. Returns the raw search dict ({data: [Shipment], ...}); slimming
+    is the mapper's job. Page size is hard-capped (_TRADE_FETCH_LIMIT) so a
+    trade-heavy entity can't balloon a single call."""
+    from sayari.trade.types.trade_filter_list import TradeFilterList  # lazy import
+
+    limit = max(1, min(limit, _TRADE_FETCH_LIMIT))
+    if role == "buyer":
+        filt = TradeFilterList(buyer_id=[entity_id])
+    else:
+        filt = TradeFilterList(supplier_id=[entity_id])
+    res = get_client().trade.search_shipments(filter=filt, limit=limit)
+    out = _as_dict(res)
+    return out if isinstance(out, dict) else {}
+
+
+def _slim_trade_party(raw: Any, role: str) -> SayariTradeParty | None:
+    """SourceOrDestinationEntity -> SayariTradeParty. names[] can carry ~50-70
+    aliases, so we keep names[0] + a count. `bis_tags` are Sayari's NATIVE
+    export-control risk-factor names off the party's `risks` dict; `sanctioned`
+    only for a DIRECT sanctioned_* tag (not ownership exposure)."""
+    if not isinstance(raw, dict) or not raw.get("id"):
+        return None
+    names = [n for n in (raw.get("names") or []) if n]
+    risks = raw.get("risks") or {}
+    sanctioned = any(str(k).lower().startswith("sanctioned") for k in risks) if isinstance(risks, dict) else False
+    return SayariTradeParty(
+        entity_id=raw["id"],
+        name=str(names[0]) if names else f"…{raw['id'][-6:]}",
+        names_count=len(names),
+        countries=raw.get("countries") or [],
+        role="buyer" if role == "buyer" else "supplier",
+        sanctioned=sanctioned,
+        bis_tags=hs_screen.native_bis_tags(risks),
+    )
+
+
+def _shipment_value(raw: dict[str, Any]) -> tuple[float | None, str | None]:
+    """First monetary_value entry's (value, currency); Sayari ships a list of
+    {value, currency, context} and the first entry is the shipment value."""
+    for mv in raw.get("monetary_value") or []:
+        if isinstance(mv, dict) and mv.get("value") is not None:
+            try:
+                return float(mv["value"]), mv.get("currency")
+            except (TypeError, ValueError):
+                continue
+    return None, None
+
+
+def slim_shipment(raw: dict[str, Any]) -> SayariShipment:
+    """One raw Sayari Shipment -> the slim, decision-relevant SayariShipment.
+    Runs the HS dual-use screen here so every shipment carries its verdict:
+    `dual_use` fires on EITHER an HS-screen hit (provenance hs_screen) OR a
+    party carrying a native Sayari BIS/export tag (provenance sayari_bis_tag)."""
+    suppliers = raw.get("supplier") or []
+    buyers = raw.get("buyer") or []
+    supplier = _slim_trade_party(suppliers[0] if suppliers else None, "supplier")
+    buyer = _slim_trade_party(buyers[0] if buyers else None, "buyer")
+
+    hs = [
+        {"code": h.get("code"), "description": h.get("description")}
+        for h in (raw.get("hs_codes") or [])
+        if isinstance(h, dict) and h.get("code")
+    ]
+    hits = hs_screen.screen_hs_codes([h["code"] for h in hs])
+    native = bool((supplier and supplier.bis_tags) or (buyer and buyer.bis_tags))
+
+    value, currency = _shipment_value(raw)
+    dates = [d for d in (raw.get("departure_date"), raw.get("arrival_date")) if isinstance(d, str) and d]
+    return SayariShipment(
+        id=str(raw.get("id") or raw.get("record") or ""),
+        supplier=supplier,
+        buyer=buyer,
+        hs_codes=hs,
+        value=value,
+        currency=currency,
+        departure_country=raw.get("departure_country") or [],
+        transit_country=raw.get("transit_country") or [],
+        arrival_country=raw.get("arrival_country") or [],
+        last_date=max(dates) if dates else None,  # ISO strings sort correctly
+        dual_use=bool(hits) or native,
+        dual_use_hits=hits,
+    )
+
+
+def slim_shipments(raw_search: dict[str, Any]) -> list[SayariShipment]:
+    """Map a raw search_shipments result to slim shipments, ranked by value
+    (desc) then date (desc) so the kept top slice is the most decision-relevant."""
+    out = [
+        slim_shipment(s) for s in (raw_search.get("data") or []) if isinstance(s, dict)
+    ]
+    out.sort(key=lambda s: ((s.value or 0.0), s.last_date or ""), reverse=True)
+    return out
+
+
+def trade_facets(shipments: list[SayariShipment]) -> dict[str, Any]:
+    """Aggregate facets over ALL fetched shipments (kept + dropped) so the slice
+    we slim away is still summarized for the model: counts, total value, top
+    HS codes, top arrival countries, dual-use tally."""
+    hs_counts: dict[str, int] = {}
+    arr_counts: dict[str, int] = {}
+    total_value = 0.0
+    dual = 0
+    for s in shipments:
+        for h in s.hs_codes:
+            c = str(h.get("code") or "")
+            if c:
+                hs_counts[c] = hs_counts.get(c, 0) + 1
+        for c in s.arrival_country:
+            arr_counts[c] = arr_counts.get(c, 0) + 1
+        total_value += s.value or 0.0
+        dual += int(s.dual_use)
+    top = lambda d, n: sorted(d.items(), key=lambda kv: -kv[1])[:n]  # noqa: E731
+    return {
+        "shipment_count": len(shipments),
+        "total_value": round(total_value, 2) if total_value else None,
+        "dual_use_count": dual,
+        "top_hs_codes": [{"code": c, "count": n} for c, n in top(hs_counts, 8)],
+        "top_arrival_countries": [{"country": c, "count": n} for c, n in top(arr_counts, 8)],
+    }
+
+
+_ROUTES_MAX = 40  # cap the routes array so a trade-heavy entity stays slim
+
+
+def shipments_to_routes(shipments: list[SayariShipment]) -> list[dict[str, Any]]:
+    """Aggregate shipments into country-pair routes for the frontend map.
+
+    One entry per (departure, arrival) ISO-3 pair across ALL fetched shipments
+    (kept + dropped, same coverage as trade_facets): shipment count, summed
+    value, dual_use if ANY shipment on the route screened dual-use, and
+    sanctioned_party if ANY shipment's supplier or buyer is directly
+    sanctioned. Geography falls back to the party's own country when the
+    shipment record lacks a departure/arrival country. Routes ride the tool
+    result `metadata` so they reach the UI on the existing tool_call_result
+    event without a new channel.
+    """
+    routes: dict[tuple[str, str], dict[str, Any]] = {}
+    for s in shipments:
+        dep = next(iter(s.departure_country), None) or (
+            next(iter(s.supplier.countries), None) if s.supplier else None
+        )
+        arr = next(iter(s.arrival_country), None) or (
+            next(iter(s.buyer.countries), None) if s.buyer else None
+        )
+        if not dep or not arr:
+            continue
+        key = (str(dep).upper(), str(arr).upper())
+        sanctioned = bool(
+            (s.supplier and s.supplier.sanctioned) or (s.buyer and s.buyer.sanctioned)
+        )
+        codes = [str(h.get("code")) for h in s.hs_codes if h.get("code")]
+        r = routes.get(key)
+        if r is None:
+            routes[key] = {
+                "departure_country": key[0],
+                "arrival_country": key[1],
+                "shipment_count": 1,
+                "total_value": s.value,
+                "dual_use": s.dual_use,
+                "sanctioned_party": sanctioned,
+                "hs_codes": codes[:5],
+            }
+            continue
+        r["shipment_count"] += 1
+        if s.value is not None:
+            r["total_value"] = (r["total_value"] or 0.0) + s.value
+        r["dual_use"] = r["dual_use"] or s.dual_use
+        r["sanctioned_party"] = r["sanctioned_party"] or sanctioned
+        for c in codes:
+            if c not in r["hs_codes"] and len(r["hs_codes"]) < 5:
+                r["hs_codes"].append(c)
+    out = sorted(
+        routes.values(),
+        key=lambda r: (r["total_value"] or 0.0, r["shipment_count"]),
+        reverse=True,
+    )
+    return out[:_ROUTES_MAX]
+
+
+def shipments_to_trade_edges(shipments: list[SayariShipment]) -> list[SayariTradeEdge]:
+    """Aggregate shipments into one `ships_to` lane per supplier->buyer pair:
+    union of HS codes, summed value, latest date, dual_use if ANY shipment on
+    the lane screened dual-use (hits unioned with provenance preserved)."""
+    lanes: dict[tuple[str, str], SayariTradeEdge] = {}
+    for s in shipments:
+        if not (s.supplier and s.buyer):
+            continue
+        key = (s.supplier.entity_id, s.buyer.entity_id)
+        codes = [str(h.get("code")) for h in s.hs_codes if h.get("code")]
+        lane = lanes.get(key)
+        if lane is None:
+            lanes[key] = SayariTradeEdge(
+                source=key[0],
+                target=key[1],
+                hs_codes=codes,
+                value=s.value,
+                last_date=s.last_date,
+                shipment_count=1,
+                dual_use=s.dual_use,
+                dual_use_hits=list(s.dual_use_hits),
+            )
+            continue
+        lane.shipment_count += 1
+        for c in codes:
+            if c not in lane.hs_codes:
+                lane.hs_codes.append(c)
+        if s.value is not None:
+            lane.value = (lane.value or 0.0) + s.value
+        if s.last_date and (not lane.last_date or s.last_date > lane.last_date):
+            lane.last_date = s.last_date
+        if s.dual_use:
+            lane.dual_use = True
+            seen = {h.get("code") for h in lane.dual_use_hits}
+            lane.dual_use_hits.extend(
+                h for h in s.dual_use_hits if h.get("code") not in seen
+            )
+    return list(lanes.values())
+
+
+def _trade_party_node(p: SayariTradeParty, dual_use: bool) -> GraphNode:
+    """A graph node for a shipment party. `dual_use` marks parties touching a
+    dual-use lane (our HS screen or a native BIS tag) so the UI can badge them."""
+    return _node(
+        p.entity_id,
+        "Entity",
+        p.name,
+        properties={
+            "countries": p.countries,
+            "sanctioned": p.sanctioned,
+            "trade_role": p.role,
+            "bis_tags": p.bis_tags,
+            "dual_use": dual_use or bool(p.bis_tags),
+        },
+    )
+
+
+def trade_to_neighborhood(
+    shipments: list[SayariShipment],
+    trade_edges: list[SayariTradeEdge],
+    root_id: str,
+    role: str,
+) -> Neighborhood:
+    """Map kept shipments onto Neighborhood nodes + `ships_to` edges. One edge
+    per supplier->buyer lane (pre-aggregated by shipments_to_trade_edges); the
+    edge `properties` carry hs_codes / value / last_date / dual_use so the
+    frontend styles trade lanes without a parallel data channel."""
+    nodes: dict[str, GraphNode] = {}
+    dual_lane_parties: set[str] = set()
+    for e in trade_edges:
+        if e.dual_use:
+            dual_lane_parties.update((e.source, e.target))
+    for s in shipments:
+        for p in (s.supplier, s.buyer):
+            if p and p.entity_id not in nodes:
+                nodes[p.entity_id] = _trade_party_node(
+                    p, p.entity_id in dual_lane_parties
+                )
+    edges = [
+        GraphEdge(
+            source=e.source,
+            target=e.target,
+            type="ships_to",
+            source_system="sayari",
+            properties={
+                "kind": "trade",
+                "hs_codes": e.hs_codes[:10],
+                "value": e.value,
+                "last_date": e.last_date,
+                "shipment_count": e.shipment_count,
+                "dual_use": e.dual_use,
+                "dual_use_hits": e.dual_use_hits,
+            },
+        )
+        for e in trade_edges
+    ]
+    return Neighborhood(
+        nodes=list(nodes.values()),
+        edges=edges,
+        metadata={
+            "root_id": root_id,
+            "role": role,
+            "kind": "trade",
+            "source_system": "sayari",
+            "lanes": len(edges),
+        },
+    )
+
+
+# --- Tier 2: shortest path ---------------------------------------------------
+
+
+def shortest_path(source_id: str, target_id: str) -> dict[str, Any]:
+    """Sayari shortest-path between two entities. Returns the raw dict
+    ({data: [{source, target: EntityDetails, path: [{field, entity, ...}]}]})."""
+    res = get_client().traversal.shortest_path(entities=[source_id, target_id])
+    out = _as_dict(res)
+    return out if isinstance(out, dict) else {}
+
+
+def parse_shortest_path(
+    raw: dict[str, Any], source_id: str, target_id: str
+) -> SayariShortestPath:
+    """Raw shortest-path dict -> SayariShortestPath. `has_sanctioned_intermediary`
+    fires only on INTERMEDIATE hops (the endpoints' own status is visible on the
+    nodes themselves) — the headline 'clean counterparty, dirty chain' signal."""
+    items = raw.get("data") or []
+    item = items[0] if items and isinstance(items[0], dict) else {}
+    target = item.get("target") or {}
+    hops: list[SayariShortestPathHop] = []
+    for hop in item.get("path") or []:
+        if not isinstance(hop, dict):
+            continue
+        ent = hop.get("entity") or {}
+        if not ent.get("id"):
+            continue
+        hops.append(
+            SayariShortestPathHop(
+                field=str(hop.get("field") or "linked_to"),
+                entity_id=ent["id"],
+                label=ent.get("label") or f"…{ent['id'][-6:]}",
+                type=ent.get("type"),
+                sanctioned=bool(ent.get("sanctioned")),
+                pep=bool(ent.get("pep")),
+                countries=ent.get("countries") or [],
+            )
+        )
+    # Intermediates exclude the final hop when it IS the target endpoint.
+    intermediates = hops[:-1] if hops and hops[-1].entity_id == (target.get("id") or target_id) else hops
+    return SayariShortestPath(
+        source_id=source_id,
+        target_id=target.get("id") or target_id,
+        target_label=target.get("label"),
+        hops=hops,
+        has_sanctioned_intermediary=any(h.sanctioned for h in intermediates),
+        found=bool(hops),
+    )
+
+
+def shortest_path_to_neighborhood(
+    raw: dict[str, Any],
+    source_id: str,
+    source_label: str,
+    source_type: str | None = None,
+) -> Neighborhood:
+    """Map a shortest-path result onto the Neighborhood shape, reusing the
+    ownership path replayer (same {source, target, path} item shape), then fold
+    in the `target` endpoint node — the EntityDetails on the result names it
+    better than a bare path hop (and guarantees it renders when the replay
+    produced no hop for it)."""
+    nb = ownership_to_neighborhood(
+        raw, source_id, source_label, "shortest_path", source_type
+    )
+    nodes = {n.id: n for n in nb.nodes}
+    items = raw.get("data") or []
+    item = items[0] if items and isinstance(items[0], dict) else {}
+    target = item.get("target") or {}
+    tid = target.get("id")
+    if tid:
+        # The EntityDetails endpoint node wins over an unnamed hop placeholder.
+        nodes[tid] = _entity_node(target)
+        if not item.get("path"):
+            edge_map = {f"{e.source}::{e.type}::{e.target}": e for e in nb.edges}
+            _add_edge(edge_map, source_id, tid, "linked_to")
+            nb.edges = list(edge_map.values())
+    nb.nodes = list(nodes.values())
+    nb.metadata["kind"] = "shortest_path"
+    nb.metadata["target_id"] = tid
+    return nb

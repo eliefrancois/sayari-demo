@@ -171,6 +171,105 @@ class SayariRecord(BaseModel):
     references_count: int | None = None
 
 
+# --- Tier 2: trade + supply-chain risk ---
+
+
+class SayariTradeParty(BaseModel):
+    """A supplier or buyer on a Sayari shipment (slimmed).
+
+    The raw `SourceOrDestinationEntity` carries a `names[]` list that can run to
+    ~50-70 aliases; we keep `name` (names[0]) plus `names_count` so a party never
+    floods the model. `bis_tags` holds Sayari's NATIVE export-control / dual-use
+    risk-factor names off the party's `risks` dict (provenance: Sayari), distinct
+    from our HS screen. `sanctioned` is set only when the party carries a direct
+    sanction tag (not mere ownership exposure).
+    """
+
+    entity_id: str
+    name: str
+    names_count: int = 0  # how many aliases the raw party carried (we kept 1)
+    countries: list[str] = Field(default_factory=list)  # ISO trigrams
+    role: Literal["supplier", "buyer"]
+    sanctioned: bool = False
+    bis_tags: list[str] = Field(default_factory=list)  # native Sayari export tags
+
+
+class SayariShipment(BaseModel):
+    """One slimmed Sayari shipment (a single supplier -> buyer movement).
+
+    Kept to the decision-relevant fields: the two parties, the 6-digit HS codes,
+    the monetary value, the route (departure -> transit -> arrival ISO-3), the
+    latest date, and the dual-use verdict. `dual_use` is True when EITHER our HS
+    screen fires OR a party carries a native BIS/export tag; `dual_use_hits` lists
+    the screened HS codes that matched (provenance carried on each hit).
+    """
+
+    id: str
+    supplier: SayariTradeParty | None = None
+    buyer: SayariTradeParty | None = None
+    hs_codes: list[dict] = Field(default_factory=list)  # [{code, description}]
+    value: float | None = None
+    currency: str | None = None
+    departure_country: list[str] = Field(default_factory=list)  # ISO-3
+    transit_country: list[str] = Field(default_factory=list)
+    arrival_country: list[str] = Field(default_factory=list)
+    last_date: str | None = None  # latest of departure/arrival dates
+    dual_use: bool = False
+    dual_use_hits: list[dict] = Field(default_factory=list)  # [{code, tier, provenance}]
+
+
+class SayariTradeEdge(BaseModel):
+    """A directed trade relationship rendered on the graph as a `ships_to` edge.
+
+    Aggregates one or more shipments between the same supplier->buyer pair:
+    `hs_codes` is the union of codes seen, `value` the summed monetary value,
+    `last_date` the most recent shipment date, `dual_use` True if ANY shipment on
+    the lane screened dual-use. Source-tagged "sayari" so the UI colors trade
+    edges distinctly from ownership/sanctions edges.
+    """
+
+    source: str  # supplier entity_id
+    target: str  # buyer entity_id
+    type: Literal["ships_to"] = "ships_to"
+    source_system: SourceSystem = "sayari"
+    hs_codes: list[str] = Field(default_factory=list)
+    value: float | None = None
+    last_date: str | None = None
+    shipment_count: int = 1
+    dual_use: bool = False
+    dual_use_hits: list[dict] = Field(default_factory=list)
+
+
+class SayariShortestPathHop(BaseModel):
+    """One hop on a Sayari shortest-path result: the relationship `field` that
+    led to `entity` (id/label/type/sanctioned/pep/countries). The `entity` shape
+    matches what the ownership/control graph builder already consumes, so a hop
+    renders as a node + edge on the same canvas."""
+
+    field: str  # relationship type, e.g. "contracted_by", "shareholder_of"
+    entity_id: str
+    label: str
+    type: str | None = None
+    sanctioned: bool = False
+    pep: bool = False
+    countries: list[str] = Field(default_factory=list)
+
+
+class SayariShortestPath(BaseModel):
+    """A Sayari shortest-path between two entities — the "hidden chain" between a
+    clean subject and a sanctioned/risky target. `has_sanctioned_intermediary`
+    flags when any INTERMEDIATE hop (not just the endpoints) is sanctioned, which
+    is the headline supply-chain risk signal: a clean-looking counterparty linked
+    to a sanctioned party through an intermediary."""
+
+    source_id: str
+    target_id: str
+    target_label: str | None = None
+    hops: list[SayariShortestPathHop] = Field(default_factory=list)
+    has_sanctioned_intermediary: bool = False
+    found: bool = True  # False when no path exists within Sayari's graph
+
+
 class SayariRiskFactor(BaseModel):
     """A single slimmed Sayari risk factor.
 
@@ -264,9 +363,14 @@ class GraphNode(BaseModel):
 class GraphEdge(BaseModel):
     source: str  # source node id
     target: str  # target node id
-    type: str  # relationship type, e.g. "officer_of"
+    type: str  # relationship type, e.g. "officer_of" or "ships_to" (Tier 2 trade)
     # Which data system produced this edge. None on legacy ICIJ edges.
     source_system: SourceSystem | None = None
+    # Optional edge metadata, mirroring GraphNode.properties. Tier 2 trade edges
+    # ("ships_to") carry hs_codes / value / last_date / dual_use here so the
+    # frontend can style and badge them without a parallel data channel. Empty
+    # for ownership/sanctions/ICIJ edges, so existing readers are unaffected.
+    properties: dict = Field(default_factory=dict)
 
 
 class Neighborhood(BaseModel):

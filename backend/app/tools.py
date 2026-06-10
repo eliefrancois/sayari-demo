@@ -332,6 +332,90 @@ async def sayari_watchlist_tool(entity_id: str, limit: int = 10) -> dict[str, An
     }
 
 
+async def sayari_trade_tool(
+    entity_id: str, role: str = "supplier", limit: int = 20
+) -> dict[str, Any]:
+    """Tier 2: shipments where `entity_id` is the supplier or buyer, with the
+    dual-use screen applied. Fetches a bounded page, keeps the top slice by
+    value/date for the model + graph, and aggregates the rest into facets."""
+    raw = await asyncio.to_thread(sayari.trade_shipments, entity_id, role)
+    shipments = sayari.slim_shipments(raw)
+    facets = sayari.trade_facets(shipments)
+    keep = max(sayari._TRADE_MIN_KEEP, min(int(limit or 20), sayari._TRADE_MAX_KEEP))
+    kept = shipments[:keep]
+    trade_edges = sayari.shipments_to_trade_edges(kept)
+    nb = sayari.trade_to_neighborhood(kept, trade_edges, entity_id, role)
+    # Country-pair routes for the frontend map. Aggregated over ALL fetched
+    # shipments (same coverage as facets) and carried on `metadata` so they
+    # reach the UI via the existing tool_call_result event.
+    routes = sayari.shipments_to_routes(shipments)
+
+    # Dual-use rollup with provenance kept distinct: hs_screen hits are OUR
+    # curated BIS/E5 CHPL screen; bis_tags are Sayari's NATIVE risk factors.
+    hs_hits: dict[str, dict] = {}
+    native_tags: set[str] = set()
+    flagged = 0
+    for s in shipments:
+        if s.dual_use:
+            flagged += 1
+        for h in s.dual_use_hits:
+            hs_hits.setdefault(str(h.get("code")), h)
+        for p in (s.supplier, s.buyer):
+            if p:
+                native_tags.update(p.bis_tags)
+    return {
+        "entity_id": entity_id,
+        "role": role,
+        "shipments": [s.model_dump() for s in kept],
+        "shown_shipments": len(kept),
+        "facets": facets,
+        "dual_use_screen": {
+            "any": flagged > 0,
+            "shipments_flagged": flagged,
+            "hs_screen_hits": list(hs_hits.values()),
+            "sayari_native_bis_tags": sorted(native_tags),
+            "note": (
+                "hs_screen_hits come from OUR bundled BIS/E5 Common High Priority "
+                "List screen (provenance hs_screen); sayari_native_bis_tags are "
+                "Sayari's OWN party risk factors (provenance sayari_bis_tag). "
+                "Report which signal fired — never blur the two."
+            ),
+        },
+        "trade_edges": [e.model_dump() for e in trade_edges],
+        "nodes": [n.model_dump() for n in nb.nodes],
+        "edges": [e.model_dump() for e in nb.edges],
+        "metadata": {**nb.metadata, "routes": routes},
+    }
+
+
+async def sayari_shortest_path_tool(
+    source_id: str, target_id: str, conversation_id: str | None = None
+) -> dict[str, Any]:
+    """Tier 2: the shortest relationship chain between two Sayari entities —
+    the 'hidden chain' between a clean subject and a sanctioned/risky target."""
+    raw = await asyncio.to_thread(sayari.shortest_path, source_id, target_id)
+    sp = sayari.parse_shortest_path(raw, source_id, target_id)
+    # Name the source root from entities already seen this conversation (the
+    # response names every hop + the target, but not the query's source).
+    known = await _known_entity_lookup(conversation_id)
+    src = known.get(source_id) or {}
+    nb: Neighborhood = sayari.shortest_path_to_neighborhood(
+        raw, source_id, src.get("label") or f"…{source_id[-6:]}", src.get("type")
+    )
+    return {
+        "path": sp.model_dump(),
+        "nodes": [n.model_dump() for n in nb.nodes],
+        "edges": [e.model_dump() for e in nb.edges],
+        "metadata": nb.metadata,
+        "note": (
+            "found=false means no path exists within Sayari's graph (itself "
+            "informative). has_sanctioned_intermediary=true means an INTERMEDIATE "
+            "hop (not an endpoint) is directly sanctioned — flag that chain "
+            "explicitly; it is the headline supply-chain risk signal."
+        ),
+    }
+
+
 async def sayari_record_tool(record_id: str) -> dict[str, Any]:
     raw = await asyncio.to_thread(sayari.record, record_id)
     return {
@@ -884,6 +968,84 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "sayari_trade",
+        "description": (
+            "Search Sayari TRADE DATA: real shipments where a Sayari entity is the "
+            "SUPPLIER (what it exports, role='supplier') or the BUYER (what it imports, "
+            "role='buyer'). Use this AFTER resolving the subject, when the question is "
+            "about trade activity, exports/imports, counterparties, supply-chain "
+            "exposure, or dual-use goods. Returns the top shipments by value/recency "
+            "(each with supplier, buyer, 6-digit HS codes, value, route countries, "
+            "date), aggregate `facets` over everything fetched, and a `dual_use_screen` "
+            "verdict combining TWO distinct signals: (1) hs_screen_hits — shipment HS "
+            "codes matching OUR bundled BIS/E5 Common High Priority List (CHPL) screen, "
+            "and (2) sayari_native_bis_tags — Sayari's OWN export-control risk factors "
+            "on the parties (e.g. exports_bis_high_priority_items_*, "
+            "controlled_by_bis_meu). ALWAYS report which of the two fired and keep "
+            "their provenance distinct. Counterparties land on the graph connected by "
+            "'ships_to' trade edges (dual-use lanes flagged). An empty result means "
+            "Sayari holds no shipments for that entity/role — informative, not an "
+            "error. Do NOT use this for ownership (sayari_ownership) or watchlist "
+            "exposure (sayari_watchlist)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_id": {
+                    "type": "string",
+                    "description": "Sayari entity_id of the resolved subject.",
+                },
+                "role": {
+                    "type": "string",
+                    "enum": ["supplier", "buyer"],
+                    "description": (
+                        "'supplier' = shipments this entity SENT (exports); "
+                        "'buyer' = shipments it RECEIVED (imports). Default 'supplier'."
+                    ),
+                    "default": "supplier",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max shipments to return in detail (default 20, max 25); the rest aggregate into facets.",
+                    "default": 20,
+                },
+            },
+            "required": ["entity_id"],
+        },
+    },
+    {
+        "name": "sayari_shortest_path",
+        "description": (
+            "Find the SHORTEST relationship chain between TWO Sayari entities — the "
+            "hidden chain connecting a clean-looking subject to a sanctioned or risky "
+            "target. Use it to answer 'how is X connected to Y?' when you have BOTH "
+            "entity_ids (resolve them first). Returns the hop-by-hop path (each hop: "
+            "relationship field + entity with its own sanctioned/pep flags) rendered "
+            "on the graph, plus `has_sanctioned_intermediary` — true when an "
+            "INTERMEDIATE entity on the chain (not an endpoint) is directly "
+            "sanctioned, which is the headline supply-chain risk: a counterparty that "
+            "screens clean but routes through a sanctioned party. ALWAYS name the "
+            "sanctioned intermediary explicitly when that flag is true. found=false "
+            "means no path exists in Sayari's graph (also worth reporting). This is "
+            "point-to-point: for one entity's whole ownership tree use "
+            "sayari_ownership, for its watchlist exposure use sayari_watchlist."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_id": {
+                    "type": "string",
+                    "description": "Sayari entity_id to start from (usually the investigated subject).",
+                },
+                "target_id": {
+                    "type": "string",
+                    "description": "Sayari entity_id to reach (e.g. a sanctioned entity).",
+                },
+            },
+            "required": ["source_id", "target_id"],
+        },
+    },
+    {
         "name": "recall_state",
         "description": (
             "Query your own structured investigation memory for THIS conversation. "
@@ -1006,6 +1168,8 @@ _ASYNC = {
     "sayari_summary": sayari_summary_tool,
     "sayari_watchlist": sayari_watchlist_tool,
     "sayari_record": sayari_record_tool,
+    "sayari_trade": sayari_trade_tool,
+    "sayari_shortest_path": sayari_shortest_path_tool,
     "recall_state": recall_state_tool,
     "recall_memory": recall_memory_tool,
 }
@@ -1016,7 +1180,13 @@ _ASYNC = {
 # sayari_profile/summary use it ONLY to name risk-path nodes from prior-turn
 # entities (best-effort); the model neither sees nor sets it.
 _NEEDS_CONVERSATION_ID = frozenset(
-    {"recall_state", "recall_memory", "sayari_profile", "sayari_summary"}
+    {
+        "recall_state",
+        "recall_memory",
+        "sayari_profile",
+        "sayari_summary",
+        "sayari_shortest_path",  # names the source root from prior-turn entities
+    }
 )
 
 

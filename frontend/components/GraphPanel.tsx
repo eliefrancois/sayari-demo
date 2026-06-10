@@ -46,8 +46,25 @@ const LABEL_COLORS: Record<NodeLabel, { bg: string; border: string; text: string
 const HIGHLIGHT_GLOW = "0 0 0 3px rgb(56 189 248 / 0.6), 0 0 24px rgb(56 189 248 / 0.45)";
 const PINNED_GLOW = "0 0 0 2px rgb(250 204 21 / 0.7)";
 
+// Tier 2 trade styling: ships_to lanes render dashed fuchsia; lanes that
+// screened dual-use (our HS screen or a native Sayari BIS tag) go amber.
+// Sanctioned nodes get a red ring so a sanctioned intermediary on a shortest
+// path is visible at a glance. Functional-minimal — full reskin comes later.
+const TRADE_EDGE_COLOR = "rgb(217 70 239)"; // fuchsia
+const DUAL_USE_COLOR = "rgb(251 191 36)"; // amber
+const SANCTIONED_RING = "0 0 0 2px rgb(248 113 113 / 0.85)";
+
 function truncate(s: string, n: number) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+/** Inline text badges for risk-relevant node flags (dual-use, sanctioned). */
+function nodeBadges(raw: ERGraphNode): string {
+  const p = (raw.properties || {}) as Record<string, unknown>;
+  const out: string[] = [];
+  if (p.sanctioned === true) out.push("⛔");
+  if (p.dual_use === true) out.push("⚠ dual-use");
+  return out.length ? ` ${out.join(" ")}` : "";
 }
 
 function styleFor(label: NodeLabel, isSubject: boolean, sourceSystem: SourceSystem) {
@@ -70,16 +87,27 @@ function styleFor(label: NodeLabel, isSubject: boolean, sourceSystem: SourceSyst
 }
 
 function buildEdges(edges: ERGraphEdge[]): Edge[] {
-  return edges.map((e, i) => ({
-    id: `e-${i}-${e.source}-${e.target}-${e.type}`,
-    source: e.source,
-    target: e.target,
-    label: e.type,
-    labelStyle: { fill: "rgb(161 161 170)", fontSize: 10 },
-    labelBgStyle: { fill: "rgb(24 24 27)", fillOpacity: 0.8 },
-    style: { stroke: "rgb(82 82 91)", strokeWidth: 1.2 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: "rgb(113 113 122)" },
-  }));
+  return edges.map((e, i) => {
+    const isTrade = e.type === "ships_to";
+    const dualUse =
+      isTrade && (e.properties as Record<string, unknown> | undefined)?.dual_use === true;
+    const stroke = dualUse ? DUAL_USE_COLOR : isTrade ? TRADE_EDGE_COLOR : "rgb(82 82 91)";
+    return {
+      id: `e-${i}-${e.source}-${e.target}-${e.type}`,
+      source: e.source,
+      target: e.target,
+      label: dualUse ? "ships_to ⚠ dual-use" : e.type,
+      labelStyle: { fill: dualUse ? DUAL_USE_COLOR : "rgb(161 161 170)", fontSize: 10 },
+      labelBgStyle: { fill: "rgb(24 24 27)", fillOpacity: 0.8 },
+      style: {
+        stroke,
+        strokeWidth: isTrade ? 1.8 : 1.2,
+        strokeDasharray: isTrade ? "6 3" : undefined,
+      },
+      animated: isTrade,
+      markerEnd: { type: MarkerType.ArrowClosed, color: isTrade ? stroke : "rgb(113 113 122)" },
+    };
+  });
 }
 
 /** d3 augments simulation nodes with x/y/vx/vy and (for fixed nodes) fx/fy. */
@@ -249,6 +277,21 @@ function GraphPanelInner({
     return Array.from(set);
   }, [visibleNodes]);
 
+  // Trade-edge legend flags (Tier 2): any ships_to lane / any dual-use lane.
+  const hasTradeEdges = useMemo(
+    () => edges.some((e) => e.type === "ships_to"),
+    [edges]
+  );
+  const hasDualUseEdges = useMemo(
+    () =>
+      edges.some(
+        (e) =>
+          e.type === "ships_to" &&
+          (e.properties as Record<string, unknown> | undefined)?.dual_use === true
+      ),
+    [edges]
+  );
+
   const visibleEdges = useMemo(() => {
     if (!hiddenLabels?.size) return edges;
     return edges.filter(
@@ -349,12 +392,27 @@ function GraphPanelInner({
       .velocityDecay(0.45);
 
     // Build React Flow nodes once; the tick handler updates only positions.
-    const initialRfNodes: Node[] = simNodes.map((sn) => ({
-      id: sn.id,
-      position: { x: sn.x ?? 0, y: sn.y ?? 0 },
-      data: { label: `${sn.raw.label}: ${truncate(sn.raw.name, 28)}`, raw: sn.raw },
-      style: styleFor(sn.raw.label, sn.isSubject, sourceSystemOf(sn.raw.source_system)),
-    }));
+    const initialRfNodes: Node[] = simNodes.map((sn) => {
+      const style = styleFor(
+        sn.raw.label,
+        sn.isSubject,
+        sourceSystemOf(sn.raw.source_system)
+      );
+      // Sanctioned nodes carry a red ring (overridden by highlight/pin glows,
+      // which is fine — those are transient attention cues).
+      if ((sn.raw.properties as Record<string, unknown> | undefined)?.sanctioned === true) {
+        (style as Record<string, unknown>).boxShadow = SANCTIONED_RING;
+      }
+      return {
+        id: sn.id,
+        position: { x: sn.x ?? 0, y: sn.y ?? 0 },
+        data: {
+          label: `${sn.raw.label}: ${truncate(sn.raw.name, 28)}${nodeBadges(sn.raw)}`,
+          raw: sn.raw,
+        },
+        style,
+      };
+    });
     setRfNodes(initialRfNodes);
     setRfEdges(buildEdges(visibleEdges));
 
@@ -589,6 +647,26 @@ function GraphPanelInner({
                 {SOURCE_SYSTEM_META[s].label}
               </div>
             ))}
+            {hasTradeEdges && (
+              <div className="flex items-center gap-1.5 text-zinc-300">
+                <span
+                  aria-hidden
+                  className="inline-block h-0 w-3 border-t-2 border-dashed"
+                  style={{ borderColor: TRADE_EDGE_COLOR }}
+                />
+                Trade (ships_to)
+              </div>
+            )}
+            {hasDualUseEdges && (
+              <div className="flex items-center gap-1.5 text-zinc-300">
+                <span
+                  aria-hidden
+                  className="inline-block h-0 w-3 border-t-2 border-dashed"
+                  style={{ borderColor: DUAL_USE_COLOR }}
+                />
+                Dual-use flagged
+              </div>
+            )}
           </div>
         </div>
       )}
