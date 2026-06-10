@@ -21,7 +21,7 @@ export function ExpandToast({
   return (
     <div
       role="status"
-      className="pointer-events-none absolute bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-md border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs text-zinc-200 shadow-lg backdrop-blur"
+      className="pointer-events-none absolute bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-[10px] border border-border bg-card px-3 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-foreground shadow-md"
     >
       {message}
     </div>

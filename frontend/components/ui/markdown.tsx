@@ -24,7 +24,7 @@ function extractLanguage(className?: string): string {
   return match ? match[1] : "plaintext"
 }
 
-// Styled element renderers tuned for the app's dark zinc theme. Sizes are
+// Styled element renderers on the lmcanvas token set (light default). Sizes are
 // em-relative so headings stay proportional whether they appear in a full
 // narrative (text-sm) or a compact claim row (text-xs). Body text intentionally
 // inherits color/size from the parent wrapper so each call site keeps control;
@@ -35,7 +35,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <h1
         className={cn(
-          "mt-4 mb-2 text-[1.3em] font-semibold leading-tight text-zinc-100 first:mt-0",
+          "mt-4 mb-2 text-[1.3em] font-semibold leading-tight text-foreground first:mt-0",
           className
         )}
         {...props}
@@ -49,7 +49,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <h2
         className={cn(
-          "mt-4 mb-2 text-[1.18em] font-semibold leading-tight text-zinc-100 first:mt-0",
+          "mt-4 mb-2 text-[1.18em] font-semibold leading-tight text-foreground first:mt-0",
           className
         )}
         {...props}
@@ -63,7 +63,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <h3
         className={cn(
-          "mt-3 mb-1.5 text-[1.08em] font-semibold leading-snug text-zinc-100 first:mt-0",
+          "mt-3 mb-1.5 text-[1.08em] font-semibold leading-snug text-foreground first:mt-0",
           className
         )}
         {...props}
@@ -77,7 +77,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <h4
         className={cn(
-          "mt-3 mb-1 text-[1em] font-semibold text-zinc-200 first:mt-0",
+          "mt-3 mb-1 text-[1em] font-semibold text-foreground first:mt-0",
           className
         )}
         {...props}
@@ -91,7 +91,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <h5
         className={cn(
-          "mt-2.5 mb-1 text-[0.95em] font-semibold uppercase tracking-wide text-zinc-300 first:mt-0",
+          "mt-2.5 mb-1 text-[0.95em] font-semibold uppercase tracking-wide text-foreground/80 first:mt-0",
           className
         )}
         {...props}
@@ -105,7 +105,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <h6
         className={cn(
-          "mt-2.5 mb-1 text-[0.9em] font-semibold uppercase tracking-wide text-zinc-400 first:mt-0",
+          "mt-2.5 mb-1 text-[0.9em] font-semibold uppercase tracking-wide text-muted-foreground first:mt-0",
           className
         )}
         {...props}
@@ -130,7 +130,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <ul
         className={cn(
-          "my-2 list-disc space-y-1 pl-5 marker:text-zinc-500 first:mt-0 last:mb-0",
+          "my-2 list-disc space-y-1 pl-5 marker:text-muted-foreground first:mt-0 last:mb-0",
           className
         )}
         {...props}
@@ -144,7 +144,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <ol
         className={cn(
-          "my-2 list-decimal space-y-1 pl-5 marker:text-zinc-500 first:mt-0 last:mb-0",
+          "my-2 list-decimal space-y-1 pl-5 marker:text-muted-foreground first:mt-0 last:mb-0",
           className
         )}
         {...props}
@@ -164,7 +164,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   strong: function Strong({ node, className, children, ...props }) {
     void node
     return (
-      <strong className={cn("font-semibold text-zinc-100", className)} {...props}>
+      <strong className={cn("font-semibold text-foreground", className)} {...props}>
         {children}
       </strong>
     )
@@ -182,7 +182,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <a
         className={cn(
-          "font-medium text-sky-400 underline underline-offset-2 transition-colors hover:text-sky-300",
+          "font-medium text-accent-brand underline underline-offset-2 transition-opacity hover:opacity-80",
           className
         )}
         target="_blank"
@@ -198,7 +198,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <blockquote
         className={cn(
-          "my-2 border-l-2 border-zinc-700 pl-3 italic text-zinc-400 first:mt-0 last:mb-0",
+          "my-2 border-l-2 border-border pl-3 italic text-muted-foreground first:mt-0 last:mb-0",
           className
         )}
         {...props}
@@ -209,7 +209,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   },
   hr: function HorizontalRule({ node, className, ...props }) {
     void node
-    return <hr className={cn("my-3 border-zinc-800", className)} {...props} />
+    return <hr className={cn("my-3 border-border", className)} {...props} />
   },
   table: function Table({ node, className, children, ...props }) {
     void node
@@ -232,7 +232,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     return (
       <th
         className={cn(
-          "border border-zinc-800 bg-zinc-900/60 px-2 py-1 font-semibold text-zinc-200",
+          "border border-border bg-muted px-2 py-1 font-semibold text-foreground",
           className
         )}
         {...props}
@@ -244,7 +244,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   td: function TableCell({ node, className, children, ...props }) {
     void node
     return (
-      <td className={cn("border border-zinc-800 px-2 py-1 align-top", className)} {...props}>
+      <td className={cn("border border-border px-2 py-1 align-top", className)} {...props}>
         {children}
       </td>
     )
@@ -260,7 +260,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
       return (
         <code
           className={cn(
-            "rounded bg-zinc-800 px-1 py-0.5 font-mono text-[0.85em] text-zinc-200",
+            "rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground",
             className
           )}
           {...rest}

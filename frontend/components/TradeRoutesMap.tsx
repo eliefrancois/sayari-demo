@@ -14,24 +14,22 @@ import centroidsJson from "@/lib/map/country-centroids.json";
 import type { TradeRoute, TradeSubject } from "@/lib/map/trade-routes";
 
 /**
- * Risky-routes world map (Tier 2). Country-level arcs departure -> arrival
- * between bundled ISO3 centroids, react-simple-maps "basic markers" style.
- * Arc color encodes risk: sanctioned party red, dual-use amber, clean neutral.
- * Stroke width scales with shipment count, opacity with lane value.
- *
- * Self-contained by design (own component + lib/map assets) so the upcoming
- * lmcanvas reskin can restyle it without surgery. Styling is functional, not
- * polished, for the same reason.
+ * Risky-routes world map (Tier 2), lmcanvas light theme. Country-level arcs
+ * departure -> arrival between bundled ISO3 centroids. Arc color encodes risk
+ * (the only color allowed besides source, spec §2): sanctioned party = red,
+ * dual-use = amber, clean = neutral gray. Marker dots are Sayari indigo
+ * (trade lanes are Sayari-sourced data). Stroke width scales with shipment
+ * count, opacity with lane value.
  */
 
 const GEO_URL = "/maps/countries-110m.json";
 // JSON imports type as number[]; the asset is generated as [lng, lat] pairs.
 const CENTROIDS = centroidsJson as unknown as Record<string, [number, number]>;
 
-const COLOR_SANCTIONED = "rgb(248 113 113)"; // red — a directly sanctioned party on the lane
-const COLOR_DUAL_USE = "rgb(251 191 36)"; // amber — HS screen or native BIS tag fired
-const COLOR_CLEAN = "rgb(113 113 122)"; // zinc — no risk signal
-const COLOR_MARKER = "rgb(45 212 191)"; // teal — Sayari accent, matches the graph legend
+const COLOR_SANCTIONED = "var(--risk-critical)"; // red — a directly sanctioned party on the lane
+const COLOR_DUAL_USE = "var(--risk-elevated)"; // amber — HS screen or native BIS tag fired
+const COLOR_CLEAN = "var(--ring)"; // neutral gray — no risk signal
+const COLOR_MARKER = "var(--source-sayari)"; // indigo — Sayari source dot
 
 function routeColor(r: TradeRoute): string {
   if (r.sanctioned_party) return COLOR_SANCTIONED;
@@ -118,10 +116,10 @@ export function TradeRoutesMap({
 
   if (routes.length === 0) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-zinc-950 text-center">
+      <div className="flex h-full w-full items-center justify-center bg-background text-center">
         <div>
-          <div className="text-sm text-zinc-600">No trade routes yet</div>
-          <div className="mt-1 text-xs text-zinc-700">
+          <div className="text-sm text-muted-foreground">No trade routes yet</div>
+          <div className="mt-1 text-xs text-muted-foreground/60">
             Ask about an entity&apos;s shipments (exports/imports) and the lanes
             will appear here.
           </div>
@@ -132,7 +130,7 @@ export function TradeRoutesMap({
 
   return (
     <div
-      className="relative h-full w-full overflow-hidden bg-zinc-950"
+      className="relative h-full w-full overflow-hidden bg-background"
       onMouseLeave={() => setHover(null)}
     >
       <ComposableMap
@@ -147,12 +145,12 @@ export function TradeRoutesMap({
                 <Geography
                   key={geo.rsmKey}
                   geography={geo}
-                  fill="rgb(39 39 42)"
-                  stroke="rgb(63 63 70)"
+                  fill="var(--muted)"
+                  stroke="var(--border)"
                   strokeWidth={0.4}
                   style={{
                     default: { outline: "none" },
-                    hover: { outline: "none", fill: "rgb(52 52 56)" },
+                    hover: { outline: "none", fill: "var(--grid-line)" },
                     pressed: { outline: "none" },
                   }}
                 />
@@ -188,14 +186,19 @@ export function TradeRoutesMap({
 
           {markers.map((m) => (
             <Marker key={m.iso3} coordinates={m.coordinates}>
-              <circle r={2.4} fill={COLOR_MARKER} stroke="rgb(9 9 11)" strokeWidth={0.8} />
+              <circle
+                r={2.4}
+                fill={COLOR_MARKER}
+                stroke="var(--card)"
+                strokeWidth={0.8}
+              />
               <text
                 textAnchor="middle"
                 y={-5}
                 style={{
-                  fontFamily: "ui-sans-serif, system-ui",
+                  fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
                   fontSize: 6,
-                  fill: "rgb(212 212 216)",
+                  fill: "var(--muted-foreground)",
                   pointerEvents: "none",
                 }}
               >
@@ -208,11 +211,11 @@ export function TradeRoutesMap({
 
       {/* Subject header: whose trade these lanes belong to, and which direction. */}
       {subjects.length > 0 && (
-        <div className="pointer-events-none absolute left-3 top-3 z-10 max-w-sm rounded-md border border-zinc-800 bg-zinc-900/85 px-2.5 py-1.5 text-[11px] shadow-lg backdrop-blur">
-          <div className="font-medium uppercase tracking-wider text-zinc-500">
+        <div className="pointer-events-none absolute left-3 top-3 z-10 max-w-sm rounded-[10px] border border-border bg-card px-3 py-2 text-[11px] shadow-sm">
+          <div className="font-mono text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
             Showing trade for
           </div>
-          <div className="mt-0.5 flex flex-col gap-0.5 text-zinc-200">
+          <div className="mt-0.5 flex flex-col gap-0.5 text-foreground">
             {subjects.map((s) => (
               <span key={`${s.entity_id}|${s.role}`}>{subjectLine(s)}</span>
             ))}
@@ -221,11 +224,11 @@ export function TradeRoutesMap({
       )}
 
       {/* Legend (matches the graph panel's bottom-left convention). */}
-      <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md border border-zinc-800 bg-zinc-900/85 px-2.5 py-1.5 text-[10px] shadow-lg backdrop-blur">
-        <div className="mb-1 font-medium uppercase tracking-wider text-zinc-500">
+      <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-[10px] border border-border bg-card px-3 py-2 text-[10px] shadow-sm">
+        <div className="mb-1 font-mono text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
           Trade routes
         </div>
-        <div className="flex flex-col gap-1 text-zinc-300">
+        <div className="flex flex-col gap-1 text-foreground/80">
           <span className="flex items-center gap-1.5">
             <span className="inline-block h-0 w-3 border-t-2" style={{ borderColor: COLOR_SANCTIONED }} />
             Sanctioned party on lane
@@ -238,47 +241,49 @@ export function TradeRoutesMap({
             <span className="inline-block h-0 w-3 border-t-2" style={{ borderColor: COLOR_CLEAN }} />
             No risk signal
           </span>
-          <span className="text-zinc-500">width = shipments · opacity = value</span>
+          <span className="text-muted-foreground">width = shipments · opacity = value</span>
         </div>
       </div>
 
       {/* Route count / skipped badge. */}
-      <div className="pointer-events-none absolute right-3 top-3 z-10 rounded-md border border-zinc-800 bg-zinc-900/85 px-2.5 py-1 text-[11px] text-zinc-400 shadow-lg backdrop-blur">
+      <div className="pointer-events-none absolute right-3 top-3 z-10 rounded-md border border-border bg-card px-2.5 py-1 font-mono text-[10px] text-muted-foreground shadow-sm">
         {arcs.length} route{arcs.length === 1 ? "" : "s"}
-        {hasRisk && <span className="ml-1.5 text-amber-300">· risk flagged</span>}
+        {hasRisk && <span className="ml-1.5 text-orange-700">· risk flagged</span>}
         {skipped > 0 && (
-          <span className="ml-1.5 text-zinc-600">· {skipped} unmappable</span>
+          <span className="ml-1.5 text-muted-foreground/60">· {skipped} unmappable</span>
         )}
       </div>
 
       {hover && (
         <div
-          className="pointer-events-none absolute z-20 max-w-xs rounded-md border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs shadow-xl backdrop-blur"
+          className="pointer-events-none absolute z-20 max-w-xs rounded-[10px] border border-border bg-card px-3 py-2 text-xs shadow-md"
           style={{ left: hover.x + 12, top: hover.y + 12 }}
         >
-          <div className="font-medium text-zinc-100">
+          <div className="font-medium text-foreground">
             {hover.route.departure_country} → {hover.route.arrival_country}
           </div>
           {partiesLine(hover.route, subjects) && (
-            <div className="mt-0.5 text-zinc-200">
+            <div className="mt-0.5 text-foreground/80">
               {partiesLine(hover.route, subjects)}
             </div>
           )}
-          <div className="mt-1 text-zinc-300">
+          <div className="mt-1 text-muted-foreground">
             {hover.route.shipment_count} shipment
             {hover.route.shipment_count === 1 ? "" : "s"} · {fmtValue(hover.route.total_value)}
           </div>
           {hover.route.hs_codes.length > 0 && (
-            <div className="mt-0.5 text-[11px] text-zinc-400">
+            <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
               HS: {hover.route.hs_codes.join(", ")}
             </div>
           )}
           {(hover.route.dual_use || hover.route.sanctioned_party) && (
             <div className="mt-1 flex gap-2 text-[11px]">
               {hover.route.sanctioned_party && (
-                <span className="text-red-300">⛔ sanctioned party</span>
+                <span className="text-red-700">⛔ sanctioned party</span>
               )}
-              {hover.route.dual_use && <span className="text-amber-300">⚠ dual-use</span>}
+              {hover.route.dual_use && (
+                <span className="text-amber-700">⚠ dual-use</span>
+              )}
             </div>
           )}
         </div>

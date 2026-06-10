@@ -242,14 +242,28 @@ export interface ConversationHydrate {
 /**
  * Source-system display metadata for the graph legend. Each data system gets a
  * distinct accent so nodes/edges are visually attributable to their origin.
+ *
+ * Color semantics (locked in docs/04-tier3-ux-spec.md §2): the chrome is
+ * neutral lmcanvas grayscale; color is reserved for exactly two signals —
+ * SOURCE (ring/dot): Sayari indigo, ICIJ magenta/violet, OpenSanctions teal,
+ * and RISK severity (glow/fill): critical red, high orange, elevated amber,
+ * relevant gray. Ring = source, glow = risk, so provenance is never lost.
  */
 export const SOURCE_SYSTEM_META: Record<
   SourceSystem,
   { label: string; color: string }
 > = {
-  icij: { label: "ICIJ Leaks", color: "rgb(96 165 250)" }, // blue
-  sanctions: { label: "OpenSanctions", color: "rgb(248 113 113)" }, // red
-  sayari: { label: "Sayari", color: "rgb(45 212 191)" }, // teal
+  icij: { label: "ICIJ Leaks", color: "var(--source-icij)" }, // magenta/violet
+  sanctions: { label: "OpenSanctions", color: "var(--source-sanctions)" }, // teal
+  sayari: { label: "Sayari", color: "var(--source-sayari)" }, // indigo
+};
+
+/** Risk-severity accent colors (glow/fill scale). CSS vars from globals.css. */
+export const RISK_LEVEL_COLORS: Record<SayariRiskLevel, string> = {
+  critical: "var(--risk-critical)",
+  high: "var(--risk-high)",
+  elevated: "var(--risk-elevated)",
+  relevant: "var(--risk-relevant)",
 };
 
 /** Default a node/edge with no explicit tag to ICIJ (legacy graph data). */
@@ -262,10 +276,10 @@ export const SAYARI_LEVEL_META: Record<
   SayariRiskLevel,
   { label: string; rank: number; className: string }
 > = {
-  critical: { label: "Critical", rank: 0, className: "text-red-200 border-red-500/50 bg-red-500/10" },
-  high: { label: "High", rank: 1, className: "text-orange-200 border-orange-500/50 bg-orange-500/10" },
-  elevated: { label: "Elevated", rank: 2, className: "text-amber-200 border-amber-500/40 bg-amber-500/10" },
-  relevant: { label: "Relevant", rank: 3, className: "text-zinc-300 border-zinc-500/40 bg-zinc-700/30" },
+  critical: { label: "Critical", rank: 0, className: "text-red-700 border-red-300 bg-red-50" },
+  high: { label: "High", rank: 1, className: "text-orange-700 border-orange-300 bg-orange-50" },
+  elevated: { label: "Elevated", rank: 2, className: "text-amber-700 border-amber-300 bg-amber-50" },
+  relevant: { label: "Relevant", rank: 3, className: "text-muted-foreground border-border bg-muted" },
 };
 
 export const sayariLevelRank = (level: string): number =>

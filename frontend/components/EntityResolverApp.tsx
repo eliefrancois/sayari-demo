@@ -6,9 +6,7 @@ import { ChatPanel } from "./ChatPanel";
 import { ExpandToast } from "./ExpandToast";
 import { GraphPanel } from "./GraphPanel";
 import { TradeRoutesMap } from "./TradeRoutesMap";
-import { ToolCallFeed } from "./ToolCallFeed";
 import {
-  activeTurn,
   countExpandDelta,
   initialState,
   reduce,
@@ -24,7 +22,7 @@ import {
 import { collectTradeRoutes, collectTradeSubjects } from "@/lib/map/trade-routes";
 import type { ExpandKind, NodeLabel } from "@/lib/types";
 
-/** Which lens the center panel shows: the React Flow graph or the routes map. */
+/** Which lens the evidence pane shows: the React Flow graph or the routes map. */
 type CenterView = "graph" | "map";
 
 /**
@@ -35,6 +33,11 @@ type CenterView = "graph" | "map";
  * Conversation flow: first message lazily creates a conversation, then every
  * message POSTs to /messages and opens a fresh SSE stream at the returned
  * cursor. The graph accumulates across turns.
+ *
+ * Layout (lmcanvas reskin, spec §3): thin top header, then a split pane —
+ * INVESTIGATION (~40%, the conversation cards) | EVIDENCE GRAPH (~60%, the
+ * React Flow graph with the Graph|Map lens). Tool calls render inline in the
+ * conversation cards, so the old Tool Feed panel is gone.
  */
 export function EntityResolverApp() {
   const [state, dispatch] = useReducer(reduce, undefined, initialState);
@@ -162,78 +165,108 @@ export function EntityResolverApp() {
   const edges = Array.from(state.edges.values());
 
   return (
-    <div className="grid h-screen grid-cols-[minmax(380px,30%)_1fr_minmax(320px,24%)] bg-zinc-950 text-zinc-100">
-      {/* Left: chat */}
-      <aside className="flex min-h-0 flex-col border-r border-zinc-800">
-        <ChatPanel
-          state={state}
-          onSend={onSend}
-          onGenerateReport={onGenerateReport}
-          disabled={isRunning}
-          onHighlightNodes={highlightNodes}
-          onClearHighlight={clearHighlight}
-          onFocusNode={focusNode}
-          onTogglePin={togglePin}
-        />
-      </aside>
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      <AppHeader state={state} onReset={resetAll} />
 
-      {/* Center: graph (with a map lens overlay for trade routes) */}
-      <main className="relative flex min-h-0 flex-col">
-        <GraphHeader
-          state={state}
-          onReset={resetAll}
-          hiddenLabels={hiddenLabels}
-          onToggleLabel={toggleLabel}
-          view={centerView}
-          onViewChange={setCenterView}
-          routeCount={tradeRoutes.length}
-        />
-        <div className="relative flex-1 min-h-0">
-          {/* GraphPanel stays mounted under the map so the force layout and
-              user-dragged positions survive flipping lenses. */}
-          <GraphPanel
-            nodes={nodes}
-            edges={edges}
-            highlightedNodeIds={state.highlightedNodeIds}
-            pinnedNodeIds={state.pinnedNodeIds}
-            focusRequest={state.focusRequest}
-            hiddenLabels={hiddenLabels}
-            onExpandNode={handleExpand}
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(420px,40%)_1fr]">
+        {/* Left: INVESTIGATION — the conversation cards */}
+        <aside className="flex min-h-0 flex-col border-r border-border">
+          <ChatPanel
+            state={state}
+            onSend={onSend}
+            onGenerateReport={onGenerateReport}
+            disabled={isRunning}
+            onHighlightNodes={highlightNodes}
+            onClearHighlight={clearHighlight}
+            onFocusNode={focusNode}
             onTogglePin={togglePin}
-            leadsShown={state.latestSearchMeta?.shown}
-            leadsTotal={state.latestSearchMeta?.total}
-            overlayLeadNodes={state.unpinnedLeadNodes}
-            showOverlayLeads={state.showUnpinnedLeads}
-            onToggleLeads={toggleLeadsOverlay}
           />
-          {centerView === "map" && (
-            <div className="absolute inset-0 z-10">
-              <TradeRoutesMap routes={tradeRoutes} subjects={tradeSubjects} />
-            </div>
-          )}
-          <ExpandToast message={expandToast} onDismiss={() => setExpandToast(null)} />
-        </div>
-      </main>
+        </aside>
 
-      {/* Right: tool call feed (current turn) */}
-      <aside className="flex min-h-0">
-        <ToolCallFeed turn={activeTurn(state)} />
-      </aside>
+        {/* Right: EVIDENCE GRAPH — graph with a map lens for trade routes */}
+        <main className="relative flex min-h-0 flex-col">
+          <EvidencePaneHeader
+            state={state}
+            hiddenLabels={hiddenLabels}
+            onToggleLabel={toggleLabel}
+            view={centerView}
+            onViewChange={setCenterView}
+            routeCount={tradeRoutes.length}
+          />
+          <div className="relative min-h-0 flex-1">
+            {/* GraphPanel stays mounted under the map so the force layout and
+                user-dragged positions survive flipping lenses. */}
+            <GraphPanel
+              nodes={nodes}
+              edges={edges}
+              highlightedNodeIds={state.highlightedNodeIds}
+              pinnedNodeIds={state.pinnedNodeIds}
+              focusRequest={state.focusRequest}
+              hiddenLabels={hiddenLabels}
+              onExpandNode={handleExpand}
+              onTogglePin={togglePin}
+              leadsShown={state.latestSearchMeta?.shown}
+              leadsTotal={state.latestSearchMeta?.total}
+              overlayLeadNodes={state.unpinnedLeadNodes}
+              showOverlayLeads={state.showUnpinnedLeads}
+              onToggleLeads={toggleLeadsOverlay}
+            />
+            {centerView === "map" && (
+              <div className="absolute inset-0 z-10">
+                <TradeRoutesMap routes={tradeRoutes} subjects={tradeSubjects} />
+              </div>
+            )}
+            <ExpandToast message={expandToast} onDismiss={() => setExpandToast(null)} />
+          </div>
+        </main>
+      </div>
     </div>
   );
 }
 
-const LEGEND: { label: NodeLabel; color: string }[] = [
-  { label: "Entity", color: "rgb(96 165 250)" },
-  { label: "Officer", color: "rgb(251 146 60)" },
-  { label: "Intermediary", color: "rgb(167 139 250)" },
-  { label: "Address", color: "rgb(74 222 128)" },
-  { label: "Other", color: "rgb(161 161 170)" },
-];
-
-function GraphHeader({
+/** Thin top header: product name, data-route chip (pixel accent), reset. */
+function AppHeader({
   state,
   onReset,
+}: {
+  state: ConversationState;
+  onReset: () => void;
+}) {
+  const hasData = state.turns.length > 0 || state.nodes.size > 0;
+  return (
+    <header className="flex shrink-0 items-center justify-between border-b border-border bg-background px-4 py-2">
+      <div className="flex items-center gap-3">
+        <h1 className="text-[13px] font-semibold tracking-tight text-foreground">
+          Entity Risk Resolver
+        </h1>
+        <span className="font-pixel rounded-md border border-border bg-muted px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-muted-foreground">
+          icij · opensanctions · sayari
+        </span>
+      </div>
+      {hasData && (
+        <button
+          onClick={onReset}
+          title="Clear the conversation and start over"
+          className="flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 font-mono text-[9px] font-medium uppercase tracking-[0.16em] text-foreground shadow-sm transition-colors hover:bg-muted"
+        >
+          <RotateCcw className="h-3 w-3" /> New investigation
+        </button>
+      )}
+    </header>
+  );
+}
+
+const LABEL_TOGGLES: NodeLabel[] = [
+  "Entity",
+  "Officer",
+  "Intermediary",
+  "Address",
+  "Other",
+];
+
+/** EVIDENCE GRAPH pane header: label, node-type filters, Graph|Map lens. */
+function EvidencePaneHeader({
+  state,
   hiddenLabels,
   onToggleLabel,
   view,
@@ -241,7 +274,6 @@ function GraphHeader({
   routeCount,
 }: {
   state: ConversationState;
-  onReset: () => void;
   hiddenLabels: Set<NodeLabel>;
   onToggleLabel: (label: NodeLabel) => void;
   view: CenterView;
@@ -250,47 +282,43 @@ function GraphHeader({
 }) {
   const n = state.nodes.size;
   const e = state.edges.size;
-  const hasData = state.turns.length > 0 || n > 0;
   return (
-    <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-950/60 px-3 py-2 backdrop-blur">
-      <div className="flex items-center gap-4">
-        <h1 className="text-sm font-semibold tracking-tight text-zinc-200">
-          Entity Risk Resolver
-          <span className="ml-2 text-[11px] font-normal text-zinc-500">
-            ICIJ Offshore Leaks × OpenSanctions
-          </span>
-        </h1>
-        <div className="hidden items-center gap-2 border-l border-zinc-800 pl-4 lg:flex">
-          {LEGEND.map((l) => {
-            const hidden = hiddenLabels.has(l.label);
+    <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2">
+      <div className="flex min-w-0 items-center gap-3">
+        <h2 className="shrink-0 font-mono text-[9px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          Evidence graph
+        </h2>
+        <span className="shrink-0 font-mono text-[9px] tabular-nums uppercase tracking-[0.14em] text-muted-foreground/70">
+          {n} nodes · {e} edges
+        </span>
+        <div className="hidden items-center gap-1 border-l border-border pl-3 lg:flex">
+          {LABEL_TOGGLES.map((label) => {
+            const hidden = hiddenLabels.has(label);
             return (
               <button
-                key={l.label}
+                key={label}
                 type="button"
-                onClick={() => onToggleLabel(l.label)}
-                title={hidden ? `Show ${l.label} nodes` : `Hide ${l.label} nodes`}
+                onClick={() => onToggleLabel(label)}
+                title={hidden ? `Show ${label} nodes` : `Hide ${label} nodes`}
                 className={
-                  "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition " +
+                  "cursor-pointer rounded-md px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] transition-colors " +
                   (hidden
-                    ? "text-zinc-600 line-through opacity-50 hover:opacity-70"
-                    : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")
+                    ? "text-muted-foreground/50 line-through hover:text-muted-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground")
                 }
               >
-                <span
-                  aria-hidden
-                  className="h-2.5 w-2.5 rounded-sm"
-                  style={{ backgroundColor: l.color, opacity: hidden ? 0.35 : 1 }}
-                />
-                {l.label}
+                {label}
               </button>
             );
           })}
         </div>
       </div>
       <div className="flex items-center gap-3">
-        {/* Graph | Map lens toggle. The map is a flip-to lens for trade
-            routes, so it never crowds the React Flow canvas. */}
-        <div className="flex items-center overflow-hidden rounded border border-zinc-700 text-[11px]">
+        <span className="hidden font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground/50 xl:inline">
+          right-click a node to expand
+        </span>
+        {/* Graph | Map lens toggle */}
+        <div className="flex items-center overflow-hidden rounded-md border border-border shadow-sm">
           {(["graph", "map"] as const).map((v) => (
             <button
               key={v}
@@ -298,18 +326,20 @@ function GraphHeader({
               onClick={() => onViewChange(v)}
               title={v === "map" ? "Trade routes on a world map" : "Network graph"}
               className={
-                "px-2 py-1 transition " +
+                "cursor-pointer px-2 py-1 font-mono text-[9px] font-medium uppercase tracking-[0.14em] transition-colors " +
                 (view === v
-                  ? "bg-zinc-700 text-zinc-100"
-                  : "bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")
+                  ? "bg-foreground text-background"
+                  : "bg-card text-muted-foreground hover:bg-muted hover:text-foreground")
               }
             >
-              {v === "graph" ? "Graph" : "Map"}
+              {v}
               {v === "map" && routeCount > 0 && (
                 <span
                   className={
-                    "ml-1 rounded-full px-1 text-[9px] tabular-nums " +
-                    (view === "map" ? "bg-zinc-600 text-zinc-200" : "bg-fuchsia-500/20 text-fuchsia-300")
+                    "ml-1 rounded-full px-1 text-[8px] tabular-nums " +
+                    (view === "map"
+                      ? "bg-background/25 text-background"
+                      : "bg-muted text-foreground")
                   }
                 >
                   {routeCount}
@@ -318,21 +348,6 @@ function GraphHeader({
             </button>
           ))}
         </div>
-        <span className="text-[11px] tabular-nums text-zinc-500">
-          {n} node{n === 1 ? "" : "s"} · {e} edge{e === 1 ? "" : "s"}
-        </span>
-        <span className="hidden text-[11px] text-zinc-700 xl:inline">
-          right-click any node to expand
-        </span>
-        {hasData && (
-          <button
-            onClick={onReset}
-            title="Clear the conversation and start over"
-            className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 transition hover:border-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
-          >
-            <RotateCcw className="h-3 w-3" /> New investigation
-          </button>
-        )}
       </div>
     </div>
   );

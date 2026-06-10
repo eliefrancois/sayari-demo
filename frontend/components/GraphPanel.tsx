@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
+  BackgroundVariant,
   Controls,
   MarkerType,
   ReactFlow,
@@ -31,58 +32,86 @@ import type {
   GraphNode as ERGraphNode,
   GraphEdge as ERGraphEdge,
   NodeLabel,
+  SayariRiskLevel,
   SourceSystem,
 } from "@/lib/types";
-import { SOURCE_SYSTEM_META, sourceSystemOf } from "@/lib/types";
+import {
+  RISK_LEVEL_COLORS,
+  SOURCE_SYSTEM_META,
+  sourceSystemOf,
+} from "@/lib/types";
 
-const LABEL_COLORS: Record<NodeLabel, { bg: string; border: string; text: string }> = {
-  Entity: { bg: "rgb(34 70 120 / 0.6)", border: "rgb(96 165 250)", text: "rgb(219 234 254)" },
-  Officer: { bg: "rgb(120 53 15 / 0.5)", border: "rgb(251 146 60)", text: "rgb(254 215 170)" },
-  Intermediary: { bg: "rgb(76 29 149 / 0.5)", border: "rgb(167 139 250)", text: "rgb(221 214 254)" },
-  Address: { bg: "rgb(20 83 45 / 0.5)", border: "rgb(74 222 128)", text: "rgb(187 247 208)" },
-  Other: { bg: "rgb(63 63 70 / 0.6)", border: "rgb(161 161 170)", text: "rgb(228 228 231)" },
-};
+/*
+ * Evidence graph, lmcanvas design language (spec §5):
+ *   - neutral light chrome on a 32px grid (grid color = --grid-line, donor:
+ *     local-lmcanvas Canvas.tsx, MIT, Copyright (c) 2026 Max Lee)
+ *   - color carries exactly two signals: RING = source system
+ *     (Sayari indigo / ICIJ magenta / OpenSanctions teal), GLOW = top risk
+ *     level (critical red / high orange / elevated amber / relevant gray).
+ *     A sanctioned Sayari entity = indigo ring + red glow; provenance is
+ *     never lost on the scariest nodes.
+ *   - thin curved labeled edges; ships_to lanes keep their dashed treatment,
+ *     amber when dual-use flagged.
+ */
 
-const HIGHLIGHT_GLOW = "0 0 0 3px rgb(56 189 248 / 0.6), 0 0 24px rgb(56 189 248 / 0.45)";
-const PINNED_GLOW = "0 0 0 2px rgb(250 204 21 / 0.7)";
+const riskGlow = (level: SayariRiskLevel) =>
+  `0 0 0 3px color-mix(in oklab, ${RISK_LEVEL_COLORS[level]} 25%, transparent), 0 0 20px color-mix(in oklab, ${RISK_LEVEL_COLORS[level]} 40%, transparent)`;
 
-// Tier 2 trade styling: ships_to lanes render dashed fuchsia; lanes that
-// screened dual-use (our HS screen or a native Sayari BIS tag) go amber.
-// Sanctioned nodes get a red ring so a sanctioned intermediary on a shortest
-// path is visible at a glance. Functional-minimal — full reskin comes later.
-const TRADE_EDGE_COLOR = "rgb(217 70 239)"; // fuchsia
-const DUAL_USE_COLOR = "rgb(251 191 36)"; // amber
-const SANCTIONED_RING = "0 0 0 2px rgb(248 113 113 / 0.85)";
+const HIGHLIGHT_GLOW =
+  "0 0 0 3px color-mix(in oklab, var(--foreground) 35%, transparent), 0 0 22px color-mix(in oklab, var(--foreground) 20%, transparent)";
+
+const DUAL_USE_COLOR = "var(--risk-elevated)";
+const EDGE_COLOR = "var(--ring)";
 
 function truncate(s: string, n: number) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-/** Inline text badges for risk-relevant node flags (dual-use, sanctioned). */
-function nodeBadges(raw: ERGraphNode): string {
+/**
+ * Top risk level for a node, mapped from the flags the backend puts on
+ * properties. Sanctioned = critical (red glow); dual-use = elevated (amber).
+ */
+function nodeRiskLevel(raw: ERGraphNode): SayariRiskLevel | null {
   const p = (raw.properties || {}) as Record<string, unknown>;
-  const out: string[] = [];
-  if (p.sanctioned === true) out.push("⛔");
-  if (p.dual_use === true) out.push("⚠ dual-use");
-  return out.length ? ` ${out.join(" ")}` : "";
+  if (p.sanctioned === true) return "critical";
+  if (p.dual_use === true) return "elevated";
+  return null;
 }
 
-function styleFor(label: NodeLabel, isSubject: boolean, sourceSystem: SourceSystem) {
-  const c = LABEL_COLORS[label] ?? LABEL_COLORS.Other;
-  // The label drives the fill (Entity/Officer/Address semantics); the data
-  // source drives the border color so provenance is visible at a glance.
-  // ICIJ keeps the label's own border; Sayari/OpenSanctions get their accent.
-  const borderColor =
-    sourceSystem === "icij" ? c.border : SOURCE_SYSTEM_META[sourceSystem].color;
+/** Rendered label: mono uppercase node-type strip + the entity name. */
+function NodeLabelContent({ raw }: { raw: ERGraphNode }) {
+  const risk = nodeRiskLevel(raw);
+  return (
+    <div className="text-center">
+      <div className="mb-0.5 font-mono text-[8px] uppercase leading-none tracking-[0.14em] text-muted-foreground">
+        {raw.label}
+        {risk === "critical" && (
+          <span style={{ color: RISK_LEVEL_COLORS.critical }}> · sanctioned</span>
+        )}
+        {risk === "elevated" && (
+          <span style={{ color: RISK_LEVEL_COLORS.elevated }}> · dual-use</span>
+        )}
+      </div>
+      <div className="text-[11px] font-medium leading-tight text-foreground">
+        {truncate(raw.name, 28)}
+      </div>
+    </div>
+  );
+}
+
+function styleFor(raw: ERGraphNode, isSubject: boolean, sourceSystem: SourceSystem) {
+  const ring = SOURCE_SYSTEM_META[sourceSystem].color;
+  const risk = nodeRiskLevel(raw);
   return {
-    background: c.bg,
-    color: c.text,
-    border: `${isSubject ? "2.5px" : "1.5px"} solid ${borderColor}`,
-    borderRadius: 8,
-    padding: "8px 12px",
-    fontSize: 12,
+    background: "var(--card)",
+    color: "var(--foreground)",
+    border: `${isSubject ? "2.5px" : "1.5px"} solid ${ring}`,
+    borderRadius: 999,
+    padding: "7px 14px",
+    fontSize: 11,
     fontWeight: 500,
     maxWidth: 200,
+    boxShadow: risk ? riskGlow(risk) : "0 1px 2px rgb(0 0 0 / 0.05)",
   };
 }
 
@@ -91,21 +120,27 @@ function buildEdges(edges: ERGraphEdge[]): Edge[] {
     const isTrade = e.type === "ships_to";
     const dualUse =
       isTrade && (e.properties as Record<string, unknown> | undefined)?.dual_use === true;
-    const stroke = dualUse ? DUAL_USE_COLOR : isTrade ? TRADE_EDGE_COLOR : "rgb(82 82 91)";
+    const stroke = dualUse ? DUAL_USE_COLOR : EDGE_COLOR;
     return {
       id: `e-${i}-${e.source}-${e.target}-${e.type}`,
       source: e.source,
       target: e.target,
       label: dualUse ? "ships_to ⚠ dual-use" : e.type,
-      labelStyle: { fill: dualUse ? DUAL_USE_COLOR : "rgb(161 161 170)", fontSize: 10 },
-      labelBgStyle: { fill: "rgb(24 24 27)", fillOpacity: 0.8 },
+      labelStyle: {
+        fill: dualUse ? DUAL_USE_COLOR : "var(--muted-foreground)",
+        fontSize: 9,
+        fontFamily: "var(--font-geist-mono), monospace",
+      },
+      labelBgStyle: { fill: "var(--card)", fillOpacity: 0.85 },
+      labelBgPadding: [3, 1] as [number, number],
+      labelBgBorderRadius: 3,
       style: {
         stroke,
-        strokeWidth: isTrade ? 1.8 : 1.2,
+        strokeWidth: isTrade ? 1.6 : 1.2,
         strokeDasharray: isTrade ? "6 3" : undefined,
       },
       animated: isTrade,
-      markerEnd: { type: MarkerType.ArrowClosed, color: isTrade ? stroke : "rgb(113 113 122)" },
+      markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
     };
   });
 }
@@ -148,7 +183,7 @@ export interface GraphPanelProps {
   nodes: ERGraphNode[];
   edges: ERGraphEdge[];
   highlightedNodeIds?: Set<string>;
-  /** Nodes the user pinned as chat context (yellow ring). */
+  /** Nodes the user pinned as chat context (dashed outline). */
   pinnedNodeIds?: Set<string>;
   /**
    * A request to pan/zoom the camera onto a specific node. Object identity
@@ -316,7 +351,14 @@ function GraphPanelInner({
   // there's exactly one running simulation at a time.
   useEffect(() => {
     const key = datasetKey(visibleNodes, visibleEdges);
-    if (key === lastKeyRef.current) return;
+    if (key === lastKeyRef.current) {
+      // Deps changed identity without the dataset changing (the parent
+      // rebuilds the node/edge arrays on every render, which during SSE
+      // streaming means every token). The cleanup below already stopped the
+      // still-relevant sim — resume it instead of leaving the layout frozen.
+      simRef.current?.restart();
+      return;
+    }
     lastKeyRef.current = key;
 
     if (visibleNodes.length === 0) {
@@ -392,27 +434,15 @@ function GraphPanelInner({
       .velocityDecay(0.45);
 
     // Build React Flow nodes once; the tick handler updates only positions.
-    const initialRfNodes: Node[] = simNodes.map((sn) => {
-      const style = styleFor(
-        sn.raw.label,
-        sn.isSubject,
-        sourceSystemOf(sn.raw.source_system)
-      );
-      // Sanctioned nodes carry a red ring (overridden by highlight/pin glows,
-      // which is fine — those are transient attention cues).
-      if ((sn.raw.properties as Record<string, unknown> | undefined)?.sanctioned === true) {
-        (style as Record<string, unknown>).boxShadow = SANCTIONED_RING;
-      }
-      return {
-        id: sn.id,
-        position: { x: sn.x ?? 0, y: sn.y ?? 0 },
-        data: {
-          label: `${sn.raw.label}: ${truncate(sn.raw.name, 28)}${nodeBadges(sn.raw)}`,
-          raw: sn.raw,
-        },
-        style,
-      };
-    });
+    const initialRfNodes: Node[] = simNodes.map((sn) => ({
+      id: sn.id,
+      position: { x: sn.x ?? 0, y: sn.y ?? 0 },
+      data: {
+        label: <NodeLabelContent raw={sn.raw} />,
+        raw: sn.raw,
+      },
+      style: styleFor(sn.raw, sn.isSubject, sourceSystemOf(sn.raw.source_system)),
+    }));
     setRfNodes(initialRfNodes);
     setRfEdges(buildEdges(visibleEdges));
 
@@ -436,10 +466,25 @@ function GraphPanelInner({
     });
 
     simRef.current = sim;
+
+    // Re-frame the camera so the growing network stays in view: once shortly
+    // after each dataset change (the layout has had a moment to spread), and
+    // once more when the simulation settles for a clean final frame.
+    const refit = () => {
+      try {
+        reactFlow.fitView({ padding: 0.25, duration: 500, maxZoom: 1.1 });
+      } catch {
+        // pane unmounted mid-stream; ignore
+      }
+    };
+    const fitTimer = window.setTimeout(refit, 700);
+    sim.on("end", refit);
+
     return () => {
+      window.clearTimeout(fitTimer);
       sim.stop();
     };
-  }, [visibleNodes, visibleEdges]);
+  }, [visibleNodes, visibleEdges, reactFlow]);
 
   // React Flow callback. Wired so that:
   //   - position drags during active drag update visuals smoothly
@@ -500,9 +545,9 @@ function GraphPanelInner({
     return () => window.clearTimeout(t);
   }, [focusRequest, reactFlow]);
 
-  // Apply highlight + pinned glow as a style overlay. Highlight (cyan) wins
-  // over pinned (yellow) when both apply, since highlight is the transient
-  // attention cue.
+  // Apply highlight (traversal path / claim hover) and pinned-context cues as
+  // style overlays. Highlight is a neutral foreground glow — color stays
+  // reserved for risk + source — and wins over pinned when both apply.
   const styledNodes = useMemo(() => {
     const hasHi = highlightedNodeIds && highlightedNodeIds.size > 0;
     const hasPin = pinnedNodeIds && pinnedNodeIds.size > 0;
@@ -514,14 +559,21 @@ function GraphPanelInner({
       if (hasOverlay && overlayIdSet.has(n.id)) {
         return {
           ...n,
-          style: { ...n.style, opacity: 0.5, borderStyle: "dashed" as const },
+          style: { ...n.style, opacity: 0.45, borderStyle: "dashed" as const },
         };
       }
       if (hasHi && highlightedNodeIds!.has(n.id)) {
         return { ...n, style: { ...n.style, boxShadow: HIGHLIGHT_GLOW } };
       }
       if (hasPin && pinnedNodeIds!.has(n.id)) {
-        return { ...n, style: { ...n.style, boxShadow: PINNED_GLOW } };
+        return {
+          ...n,
+          style: {
+            ...n.style,
+            outline: "2px dashed var(--muted-foreground)",
+            outlineOffset: 3,
+          },
+        };
       }
       return n;
     });
@@ -561,12 +613,12 @@ function GraphPanelInner({
   }, []);
 
   return (
-    <div ref={containerRef} className="relative h-full w-full bg-zinc-950">
+    <div ref={containerRef} className="relative h-full w-full bg-background">
       {nodes.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center">
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-center">
           <div>
-            <div className="text-zinc-600 text-sm">No graph yet</div>
-            <div className="mt-1 text-xs text-zinc-700">
+            <div className="text-sm text-muted-foreground">No graph yet</div>
+            <div className="mt-1 text-xs text-muted-foreground/60">
               Start an investigation to see the corporate network materialize.
             </div>
           </div>
@@ -589,9 +641,17 @@ function GraphPanelInner({
         minZoom={0.2}
         maxZoom={2}
       >
-        <Background color="rgb(39 39 42)" gap={20} />
-        <Controls className="!bg-zinc-900 !border-zinc-700 [&_button]:!bg-zinc-900 [&_button]:!border-zinc-700 [&_button:hover]:!bg-zinc-800 [&_button_svg]:!fill-zinc-300" />
+        <Background
+          variant={BackgroundVariant.Lines}
+          gap={32}
+          size={1}
+          color="var(--grid-line)"
+        />
+        <Controls />
       </ReactFlow>
+
+      {/* Radial vignette fading the grid toward the pane edges (spec §1). */}
+      <div className="canvas-vignette pointer-events-none absolute inset-0 z-4" />
 
       {showLeadsBadge && (
         <button
@@ -602,72 +662,102 @@ function GraphPanelInner({
               ? "Hide the additional leads"
               : "Show the remaining leads on the canvas"
           }
-          className="absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900/85 px-2.5 py-1 text-[11px] text-zinc-300 shadow-lg backdrop-blur transition hover:border-teal-500/60 hover:bg-zinc-800/90 hover:text-zinc-100"
+          className="absolute right-3 top-3 z-10 flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 font-mono text-[10px] text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
         >
           <span
-            className={
-              "inline-block h-2 w-2 rounded-full " +
-              (showOverlayLeads ? "bg-teal-300" : "bg-teal-400")
-            }
+            className="inline-block h-2 w-2 rounded-full"
+            style={{ backgroundColor: "var(--source-sayari)" }}
             aria-hidden
           />
           {showOverlayLeads ? (
             <>
               <span>
                 Showing all{" "}
-                <span className="font-medium text-zinc-100">{leadsTotal}</span> leads
+                <span className="font-medium text-foreground">{leadsTotal}</span>{" "}
+                leads
               </span>
-              <span className="text-zinc-500">· hide extras</span>
+              <span className="text-muted-foreground/60">· hide extras</span>
             </>
           ) : (
             <>
               <span>
-                Showing <span className="font-medium text-zinc-100">{leadsShown}</span> of{" "}
-                <span className="font-medium text-zinc-100">{leadsTotal}</span> leads
+                Showing <span className="font-medium text-foreground">{leadsShown}</span>{" "}
+                of <span className="font-medium text-foreground">{leadsTotal}</span> leads
               </span>
-              <span className="text-teal-300/80">· +{leadsTotal! - leadsShown!} show all</span>
+              <span className="text-foreground/70">
+                · +{leadsTotal! - leadsShown!} show all
+              </span>
             </>
           )}
         </button>
       )}
 
-      {presentSources.length > 0 && (
-        <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md border border-zinc-800 bg-zinc-900/85 px-2.5 py-1.5 text-[10px] shadow-lg backdrop-blur">
-          <div className="mb-1 font-medium uppercase tracking-wider text-zinc-500">
-            Source
+      {/* Legend card (bottom-left, spec §5): RISK + SOURCE scales. */}
+      {nodes.length > 0 && (
+        <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-[10px] border border-border bg-card px-3 py-2 text-[10px] shadow-sm">
+          <div className="mb-1 font-mono text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            Risk
           </div>
-          <div className="flex flex-col gap-1">
-            {presentSources.map((s) => (
-              <div key={s} className="flex items-center gap-1.5 text-zinc-300">
+          <div className="flex flex-col gap-0.5">
+            {(
+              [
+                ["critical", "Critical"],
+                ["high", "High"],
+                ["elevated", "Elevated"],
+                ["relevant", "Relevant"],
+              ] as const
+            ).map(([level, label]) => (
+              <div key={level} className="flex items-center gap-1.5 text-foreground/80">
                 <span
                   aria-hidden
-                  className="inline-block h-2.5 w-2.5 rounded-sm border"
-                  style={{ borderColor: SOURCE_SYSTEM_META[s].color }}
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: RISK_LEVEL_COLORS[level] }}
                 />
-                {SOURCE_SYSTEM_META[s].label}
+                {label}
               </div>
             ))}
-            {hasTradeEdges && (
-              <div className="flex items-center gap-1.5 text-zinc-300">
+          </div>
+          {presentSources.length > 0 && (
+            <>
+              <div className="mb-1 mt-2 font-mono text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                Source
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {presentSources.map((s) => (
+                  <div key={s} className="flex items-center gap-1.5 text-foreground/80">
+                    <span
+                      aria-hidden
+                      className="inline-block h-2 w-2 rounded-full border-2 bg-card"
+                      style={{ borderColor: SOURCE_SYSTEM_META[s].color }}
+                    />
+                    {SOURCE_SYSTEM_META[s].label}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {hasTradeEdges && (
+            <div className="mt-2 flex flex-col gap-0.5">
+              <div className="flex items-center gap-1.5 text-foreground/80">
                 <span
                   aria-hidden
                   className="inline-block h-0 w-3 border-t-2 border-dashed"
-                  style={{ borderColor: TRADE_EDGE_COLOR }}
+                  style={{ borderColor: "var(--ring)" }}
                 />
                 Trade (ships_to)
               </div>
-            )}
-            {hasDualUseEdges && (
-              <div className="flex items-center gap-1.5 text-zinc-300">
-                <span
-                  aria-hidden
-                  className="inline-block h-0 w-3 border-t-2 border-dashed"
-                  style={{ borderColor: DUAL_USE_COLOR }}
-                />
-                Dual-use flagged
-              </div>
-            )}
-          </div>
+              {hasDualUseEdges && (
+                <div className="flex items-center gap-1.5 text-foreground/80">
+                  <span
+                    aria-hidden
+                    className="inline-block h-0 w-3 border-t-2 border-dashed"
+                    style={{ borderColor: "var(--risk-elevated)" }}
+                  />
+                  Dual-use flagged
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -693,43 +783,48 @@ function GraphPanelInner({
 
 function NodeTooltip({ hover }: { hover: NonNullable<HoverState> }) {
   const n = hover.node;
+  const src = sourceSystemOf(n.source_system);
   const propEntries = Object.entries(n.properties || {})
     .filter(([k]) => !["name", "labels"].includes(k))
     .slice(0, 6);
   return (
     <div
-      className="pointer-events-none absolute z-20 max-w-xs rounded-md border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs shadow-xl backdrop-blur"
+      className="pointer-events-none absolute z-20 max-w-xs rounded-[10px] border border-border bg-card px-3 py-2 text-xs shadow-md"
       style={{ left: hover.x + 14, top: hover.y + 14 }}
     >
       <div className="mb-1 flex items-center gap-2">
-        <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-300">
+        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">
           {n.label}
         </span>
         <span
-          className="rounded px-1.5 py-0.5 text-[10px]"
-          style={{
-            color: SOURCE_SYSTEM_META[sourceSystemOf(n.source_system)].color,
-            backgroundColor: "rgb(24 24 27 / 0.6)",
-          }}
+          className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.12em]"
+          style={{ color: SOURCE_SYSTEM_META[src].color }}
         >
-          {SOURCE_SYSTEM_META[sourceSystemOf(n.source_system)].label}
+          <span
+            aria-hidden
+            className="inline-block h-1.5 w-1.5 rounded-full border bg-card"
+            style={{ borderColor: SOURCE_SYSTEM_META[src].color }}
+          />
+          {SOURCE_SYSTEM_META[src].label}
         </span>
         {n.source && (
-          <span className="text-[10px] text-zinc-500">{n.source}</span>
+          <span className="text-[9px] text-muted-foreground/70">{n.source}</span>
         )}
       </div>
-      <div className="font-medium text-zinc-100">{n.name}</div>
+      <div className="font-medium text-foreground">{n.name}</div>
       {propEntries.length > 0 && (
         <dl className="mt-1.5 space-y-0.5 text-[11px]">
           {propEntries.map(([k, v]) => (
             <div key={k} className="flex gap-2">
-              <dt className="shrink-0 text-zinc-500">{k}:</dt>
-              <dd className="truncate text-zinc-300">{String(v)}</dd>
+              <dt className="shrink-0 text-muted-foreground">{k}:</dt>
+              <dd className="truncate text-foreground/80">{String(v)}</dd>
             </div>
           ))}
         </dl>
       )}
-      <div className="mt-1.5 text-[10px] text-zinc-600">right-click to expand</div>
+      <div className="mt-1.5 font-mono text-[8px] uppercase tracking-[0.14em] text-muted-foreground/60">
+        right-click to expand
+      </div>
     </div>
   );
 }
@@ -760,21 +855,21 @@ function NodeContextMenu({
   const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(menu.node.name)}`;
   return (
     <div
-      className="absolute z-30 w-56 overflow-hidden rounded-md border border-zinc-700 bg-zinc-900/95 text-xs shadow-xl backdrop-blur"
+      className="absolute z-30 w-56 overflow-hidden rounded-[10px] border border-border bg-card text-xs shadow-md"
       style={{ left: menu.x, top: menu.y }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="border-b border-zinc-800 px-3 py-2">
-        <div className="truncate font-medium text-zinc-100">{menu.node.name}</div>
-        <div className="text-[10px] uppercase tracking-wide text-zinc-500">
+      <div className="border-b border-border px-3 py-2">
+        <div className="truncate font-medium text-foreground">{menu.node.name}</div>
+        <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">
           {menu.node.label}
         </div>
       </div>
       <ul>
-        <li className="border-b border-zinc-800">
+        <li className="border-b border-border">
           <button
             onClick={onTogglePin}
-            className="block w-full px-3 py-1.5 text-left font-medium text-amber-200 hover:bg-zinc-800"
+            className="block w-full cursor-pointer px-3 py-1.5 text-left font-medium text-foreground hover:bg-muted"
           >
             {isPinned ? "Unpin from chat context" : "Add to chat context"}
           </button>
@@ -783,30 +878,30 @@ function NodeContextMenu({
           <li key={o.kind}>
             <button
               onClick={() => onExpand(o.kind)}
-              className="block w-full px-3 py-1.5 text-left text-zinc-200 hover:bg-zinc-800"
+              className="block w-full cursor-pointer px-3 py-1.5 text-left text-foreground/80 hover:bg-muted"
             >
               {o.label}
             </button>
           </li>
         ))}
-        <li className="border-t border-zinc-800">
+        <li className="border-t border-border">
           <a
             href={googleUrl}
             target="_blank"
             rel="noopener noreferrer"
             onClick={onClose}
-            className="block w-full px-3 py-1.5 text-zinc-300 hover:bg-zinc-800"
+            className="block w-full px-3 py-1.5 text-foreground/80 hover:bg-muted"
           >
             Search Google
           </a>
         </li>
-        <li className="border-t border-zinc-800">
+        <li className="border-t border-border">
           <button
             onClick={() => {
               navigator.clipboard?.writeText(menu.node.id);
               onClose();
             }}
-            className="block w-full px-3 py-1.5 text-left text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+            className="block w-full cursor-pointer px-3 py-1.5 text-left text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             Copy node ID
           </button>

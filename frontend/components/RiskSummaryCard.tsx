@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { motion } from "framer-motion";
 import { ExternalLink, Search, RotateCcw, FileText, ShieldAlert, HelpCircle, GitBranch } from "lucide-react";
 import type {
   Claim,
@@ -11,12 +12,13 @@ import type {
 } from "@/lib/types";
 import {
   SAYARI_LEVEL_META,
+  SOURCE_SYSTEM_META,
   sayariLevelRank,
+  sourceSystemOf,
   pathNodeIds,
   humanizeRiskFactor,
 } from "@/lib/types";
 import { RiskSignalBadge } from "./RiskSignalBadge";
-import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
 import { Markdown } from "@/components/ui/markdown";
 import {
   HoverCard,
@@ -25,10 +27,12 @@ import {
 } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 
+/* Confidence is grayscale — color is reserved for risk severity and source
+ * provenance (spec §2). Intensity encodes the band instead. */
 const CONFIDENCE_STYLE = {
-  high: "text-emerald-300 border-emerald-400/40 bg-emerald-500/5",
-  medium: "text-amber-300 border-amber-400/40 bg-amber-500/5",
-  low: "text-zinc-400 border-zinc-500/40 bg-zinc-800/40",
+  high: "text-foreground border-foreground/40 bg-muted",
+  medium: "text-muted-foreground border-border bg-muted/60",
+  low: "text-muted-foreground/70 border-border bg-transparent",
 } as const;
 
 const CONFIDENCE_RANK: Record<Claim["confidence"], number> = {
@@ -37,20 +41,17 @@ const CONFIDENCE_RANK: Record<Claim["confidence"], number> = {
   low: 2,
 };
 
-const NODE_LABEL_DOT: Record<GraphNode["label"], string> = {
-  Entity: "bg-blue-400",
-  Officer: "bg-orange-400",
-  Intermediary: "bg-violet-400",
-  Address: "bg-green-400",
-  Other: "bg-zinc-400",
-};
-
 const googleUrl = (q: string) =>
   `https://www.google.com/search?q=${encodeURIComponent(q)}`;
 
 const opensanctionsUrl = (id: string) =>
   `https://www.opensanctions.org/entities/${encodeURIComponent(id)}/`;
 
+/**
+ * The formal investigation memo. Per the spec this stays a visually DISTINCT
+ * card vs normal conversation turns: inverted corner badge, heavier header,
+ * same lmcanvas card shell (white, hairline border, rounded-[10px], shadow).
+ */
 export function RiskSummaryCard({
   summary,
   nodesById,
@@ -84,35 +85,43 @@ export function RiskSummaryCard({
   );
 
   return (
-    <div className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-4 text-sm shadow-lg backdrop-blur">
-      <header className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <div className="text-xs uppercase tracking-wider text-zinc-500">
-            Risk Summary
-          </div>
-          <h3 className="flex items-center gap-2 text-lg font-semibold text-zinc-100">
-            {summary.entity_name}
-            <a
-              href={googleUrl(summary.entity_name)}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Search Google for this entity"
-              className="text-zinc-500 transition hover:text-zinc-200"
-            >
-              <Search className="h-3.5 w-3.5" />
-            </a>
-          </h3>
-        </div>
+    <motion.div
+      initial={{ scale: 0.96, opacity: 0, y: -6 }}
+      animate={{ scale: 1, opacity: 1, y: 0 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      style={{ transformOrigin: "top center" }}
+      className="relative rounded-[10px] border border-foreground/25 bg-card px-5 pb-4 pt-10 text-sm shadow-sm"
+    >
+      {/* Corner badge row — inverted badge marks the formal report */}
+      <div className="absolute left-4 right-4 top-3 flex min-w-0 items-center gap-2">
+        <span className="rounded-md bg-foreground px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] text-background">
+          risk summary
+        </span>
         <span
           className={
-            "rounded px-2 py-0.5 text-xs font-medium " +
+            "ml-auto rounded-md border px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] " +
             (summary.found
-              ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-              : "border border-zinc-600 bg-zinc-800/60 text-zinc-400")
+              ? "border-border bg-muted text-foreground"
+              : "border-border bg-transparent text-muted-foreground")
           }
         >
-          {summary.found ? "Identified" : "Not found"}
+          {summary.found ? "identified" : "not found"}
         </span>
+      </div>
+
+      <header className="mb-3">
+        <h3 className="flex items-center gap-2 text-[16px] font-semibold leading-snug text-foreground">
+          {summary.entity_name}
+          <a
+            href={googleUrl(summary.entity_name)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Search Google for this entity"
+            className="text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <Search className="h-3.5 w-3.5" />
+          </a>
+        </h3>
       </header>
 
       {summary.risk_signals.length > 0 && (
@@ -123,15 +132,15 @@ export function RiskSummaryCard({
         </div>
       )}
 
-      <Markdown className="prose prose-sm prose-invert mb-4 max-w-none leading-relaxed text-zinc-300">
+      <Markdown className="mb-4 text-[12.5px] leading-relaxed text-foreground/90">
         {summary.investigation_summary}
       </Markdown>
 
       {sortedClaims.length > 0 && (
         <section className="mb-4">
-          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+          <h4 className="mb-2 font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
             Claims ({sortedClaims.length})
-            <span className="ml-2 font-normal normal-case tracking-normal text-zinc-600">
+            <span className="ml-2 font-sans font-normal normal-case tracking-normal text-muted-foreground/70">
               hover a claim to highlight in graph · click a source chip to focus
             </span>
           </h4>
@@ -147,24 +156,26 @@ export function RiskSummaryCard({
                     nodeIds.length && onHighlightNodes?.(nodeIds)
                   }
                   onMouseLeave={() => onClearHighlight?.()}
-                  className="cursor-default rounded-md border border-zinc-800 bg-zinc-950/40 p-2.5 transition hover:border-zinc-600 hover:bg-zinc-950/80"
+                  className="cursor-default rounded-[8px] border border-border bg-background p-2.5 transition-colors hover:border-foreground/30 hover:bg-muted/50"
                 >
                   <div className="mb-1.5 flex items-center gap-2">
                     <span
                       className={
-                        "rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide " +
+                        "rounded border px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.12em] " +
                         CONFIDENCE_STYLE[c.confidence]
                       }
                     >
                       {c.confidence}
                     </span>
                   </div>
-                  <Markdown className="prose prose-sm prose-invert max-w-none leading-relaxed text-zinc-200">
+                  <Markdown className="text-xs leading-relaxed text-foreground/90">
                     {c.text}
                   </Markdown>
                   {c.source_refs.length > 0 && (
                     <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                      <span className="text-[10px] text-zinc-600">Sources:</span>
+                      <span className="font-mono text-[8px] uppercase tracking-[0.14em] text-muted-foreground/70">
+                        sources
+                      </span>
                       {c.source_refs.map((ref, j) => (
                         <ClaimSourceChip
                           key={j}
@@ -187,29 +198,29 @@ export function RiskSummaryCard({
 
       {summary.sanctions_hits.length > 0 && (
         <section className="mb-4">
-          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+          <h4 className="mb-2 font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
             Sanctions hits
           </h4>
           <ul className="space-y-1.5">
             {summary.sanctions_hits.map((h, i) => (
               <li
                 key={i}
-                className="rounded-md border border-red-900/40 bg-red-950/20 p-2 text-xs"
+                className="rounded-[8px] border border-red-300 bg-red-50/60 p-2 text-xs"
               >
                 <div className="flex items-baseline justify-between gap-2">
-                  <span className="flex items-center gap-1.5 font-medium text-red-200">
+                  <span className="flex items-center gap-1.5 font-medium text-red-800">
                     {h.matched_name}
                     <a
                       href={googleUrl(`${h.matched_name} sanctions`)}
                       target="_blank"
                       rel="noopener noreferrer"
                       title="Search Google for sanctions info"
-                      className="text-red-400/60 transition hover:text-red-200"
+                      className="text-red-500/70 transition-colors hover:text-red-700"
                     >
                       <ExternalLink className="h-3 w-3" />
                     </a>
                   </span>
-                  <span className="text-[10px] tabular-nums text-red-400">
+                  <span className="font-mono text-[10px] tabular-nums text-red-600">
                     score {h.score.toFixed(2)}
                   </span>
                 </div>
@@ -217,7 +228,7 @@ export function RiskSummaryCard({
                   {h.lists.slice(0, 8).map((l) => (
                     <span
                       key={l}
-                      className="rounded bg-red-950/60 px-1.5 py-0.5 text-[10px] text-red-300"
+                      className="rounded bg-red-100 px-1.5 py-0.5 font-mono text-[9px] text-red-700"
                     >
                       {l}
                     </span>
@@ -232,10 +243,10 @@ export function RiskSummaryCard({
                   h.countries?.length ||
                   h.address?.length ||
                   h.birth_date?.length) && (
-                  <dl className="mt-1.5 space-y-0.5 border-t border-red-900/30 pt-1.5 text-[10px] text-red-300/80">
+                  <dl className="mt-1.5 space-y-0.5 border-t border-red-200 pt-1.5 text-[10px] text-red-800/80">
                     {h.position?.length ? (
                       <div className="flex gap-1.5">
-                        <dt className="shrink-0 font-semibold uppercase tracking-wider text-red-400/60">
+                        <dt className="shrink-0 font-mono font-semibold uppercase tracking-[0.1em] text-red-600/70">
                           Position
                         </dt>
                         <dd className="truncate" title={h.position.join("; ")}>
@@ -245,7 +256,7 @@ export function RiskSummaryCard({
                     ) : null}
                     {h.countries?.length ? (
                       <div className="flex gap-1.5">
-                        <dt className="shrink-0 font-semibold uppercase tracking-wider text-red-400/60">
+                        <dt className="shrink-0 font-mono font-semibold uppercase tracking-[0.1em] text-red-600/70">
                           Country
                         </dt>
                         <dd className="uppercase">{h.countries.join(", ")}</dd>
@@ -253,7 +264,7 @@ export function RiskSummaryCard({
                     ) : null}
                     {h.address?.length ? (
                       <div className="flex gap-1.5">
-                        <dt className="shrink-0 font-semibold uppercase tracking-wider text-red-400/60">
+                        <dt className="shrink-0 font-mono font-semibold uppercase tracking-[0.1em] text-red-600/70">
                           Address
                         </dt>
                         <dd className="truncate" title={h.address.join("; ")}>
@@ -263,7 +274,7 @@ export function RiskSummaryCard({
                     ) : null}
                     {h.birth_date?.length ? (
                       <div className="flex gap-1.5">
-                        <dt className="shrink-0 font-semibold uppercase tracking-wider text-red-400/60">
+                        <dt className="shrink-0 font-mono font-semibold uppercase tracking-[0.1em] text-red-600/70">
                           Born
                         </dt>
                         <dd>{h.birth_date.join(", ")}</dd>
@@ -287,12 +298,12 @@ export function RiskSummaryCard({
 
       {summary.clarifying_questions && summary.clarifying_questions.length > 0 && (
         <section className="mb-4">
-          <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+          <h4 className="mb-2 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
             <HelpCircle className="h-3 w-3" /> Open questions
           </h4>
           <ul className="space-y-1">
             {summary.clarifying_questions.map((q, i) => (
-              <li key={i} className="text-xs leading-relaxed text-zinc-400">
+              <li key={i} className="text-xs leading-relaxed text-muted-foreground">
                 {q}
               </li>
             ))}
@@ -302,32 +313,34 @@ export function RiskSummaryCard({
 
       {summary.suggested_followups && summary.suggested_followups.length > 0 && (
         <section className="mb-3">
-          <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+          <h4 className="mb-2 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
             <RotateCcw className="h-3 w-3" /> Follow-up investigations
           </h4>
           <div className="flex flex-wrap gap-1.5">
             {summary.suggested_followups.map((s, i) => (
-              <PromptSuggestion
+              <motion.button
                 key={i}
-                size="sm"
+                type="button"
+                whileTap={{ scale: 0.97 }}
+                whileHover={{ y: -1 }}
                 onClick={() => onFollowup?.(s.name)}
                 title={s.reason}
-                className="border-sky-500/40 bg-sky-500/10 text-xs text-sky-200 hover:border-sky-400 hover:bg-sky-500/20"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-foreground/80 transition-colors hover:border-foreground/40 hover:text-foreground focus:outline-none"
               >
                 {s.name}
-              </PromptSuggestion>
+              </motion.button>
             ))}
           </div>
         </section>
       )}
 
-      <footer className="mt-3 flex items-center justify-between border-t border-zinc-800 pt-2 text-[10px] text-zinc-500">
-        <span>Tools used: {summary.tools_used.join(", ")}</span>
+      <footer className="mt-3 flex items-center justify-between border-t border-border pt-2 font-mono text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
+        <span className="normal-case">Tools used: {summary.tools_used.join(", ")}</span>
         {summary.entity_id && (
-          <span className="font-mono">…{summary.entity_id.slice(-12)}</span>
+          <span className="normal-case">…{summary.entity_id.slice(-12)}</span>
         )}
       </footer>
-    </div>
+    </motion.div>
   );
 }
 
@@ -360,9 +373,9 @@ function SayariRiskFactors({
 
   return (
     <section className="mb-4">
-      <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+      <h4 className="mb-2 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
         <ShieldAlert className="h-3 w-3" /> Sayari risk factors ({factors.length})
-        <span className="ml-1 font-normal normal-case tracking-normal text-zinc-600">
+        <span className="ml-1 font-sans font-normal normal-case tracking-normal text-muted-foreground/70">
           click a factor to trace its path on the graph
         </span>
       </h4>
@@ -374,13 +387,15 @@ function SayariRiskFactors({
               <div className="mb-1 flex items-center gap-1.5">
                 <span
                   className={
-                    "rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide " +
-                    (meta?.className ?? "border-zinc-600 text-zinc-300")
+                    "rounded border px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.12em] " +
+                    (meta?.className ?? "border-border text-muted-foreground")
                   }
                 >
                   {meta?.label ?? level}
                 </span>
-                <span className="text-[10px] text-zinc-600">{items.length}</span>
+                <span className="text-[10px] text-muted-foreground/70">
+                  {items.length}
+                </span>
               </div>
               <ul className="space-y-1">
                 {items.map((f, i) => {
@@ -400,28 +415,28 @@ function SayariRiskFactors({
                             : "Direct factor (no traversal path)"
                         }
                         className={cn(
-                          "flex w-full items-center gap-1.5 rounded border border-zinc-800 bg-zinc-950/40 px-2 py-1 text-left text-[11px] transition",
+                          "flex w-full items-center gap-1.5 rounded-[8px] border border-border bg-background px-2 py-1 text-left text-[11px] transition-colors",
                           hasPath
-                            ? "cursor-pointer hover:border-sky-500/60 hover:bg-zinc-900"
+                            ? "cursor-pointer hover:border-foreground/40 hover:bg-muted/60"
                             : "cursor-default"
                         )}
                       >
                         {hasPath && (
-                          <GitBranch className="h-3 w-3 shrink-0 text-sky-400/70" />
+                          <GitBranch className="h-3 w-3 shrink-0 text-muted-foreground" />
                         )}
-                        <span className="min-w-0 flex-1 truncate text-zinc-200">
+                        <span className="min-w-0 flex-1 truncate text-foreground/90">
                           {humanizeRiskFactor(f.name)}
                         </span>
                         {f.psa && (
                           <span
-                            className="shrink-0 rounded bg-zinc-800 px-1 py-0.5 text-[9px] uppercase tracking-wide text-zinc-400"
+                            className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[8px] uppercase tracking-[0.1em] text-muted-foreground"
                             title="Entity-resolution derived (Possibly Same As) — lower confidence"
                           >
                             ER-derived
                           </span>
                         )}
                         {typeof f.value === "number" && f.value > 0 && (
-                          <span className="shrink-0 text-[10px] tabular-nums text-zinc-500">
+                          <span className="shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground">
                             {f.value} hop{f.value === 1 ? "" : "s"}
                           </span>
                         )}
@@ -441,10 +456,12 @@ function SayariRiskFactors({
 /**
  * One source citation chip. Three flavors based on which fields the
  * SourceRef has:
- *  - ICIJ graph node    -> rounded chip with the node's label-dot + name.
+ *  - ICIJ graph node    -> chip with an ICIJ (magenta) source dot + name.
  *                          Hover shows full metadata, click highlights node.
- *  - OpenSanctions hit  -> red chip linking to opensanctions.org.
+ *  - OpenSanctions hit  -> teal-dotted chip linking to opensanctions.org.
+ *  - Sayari factor      -> indigo-dotted chip.
  *  - Bare leak ref      -> grey chip with just the leak name.
+ * Dot color = source system (the spec's ring/dot signal).
  */
 function ClaimSourceChip({
   index,
@@ -464,9 +481,13 @@ function ClaimSourceChip({
         target="_blank"
         rel="noopener noreferrer"
         title="Open in OpenSanctions"
-        className="inline-flex items-center gap-1 rounded-full border border-red-900/50 bg-red-950/30 px-1.5 py-0.5 text-[10px] text-red-300 transition hover:border-red-700 hover:bg-red-950/60 hover:text-red-100"
+        className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
       >
         <span className="font-medium tabular-nums">[{index}]</span>
+        <span
+          className="h-1.5 w-1.5 rounded-full border bg-card"
+          style={{ borderColor: SOURCE_SYSTEM_META.sanctions.color }}
+        />
         <span className="max-w-[140px] truncate">OpenSanctions</span>
         <ExternalLink className="h-2.5 w-2.5" />
       </a>
@@ -480,16 +501,22 @@ function ClaimSourceChip({
     return (
       <span
         title={ref_.sayari_entity_id ? `Sayari entity ${ref_.sayari_entity_id}` : "Sayari"}
-        className="inline-flex items-center gap-1 rounded-full border border-teal-700/50 bg-teal-950/30 px-1.5 py-0.5 text-[10px] text-teal-200"
+        className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground"
       >
         <span className="font-medium tabular-nums">[{index}]</span>
+        <span
+          className="h-1.5 w-1.5 rounded-full border bg-card"
+          style={{ borderColor: SOURCE_SYSTEM_META.sayari.color }}
+        />
         <span className="max-w-[160px] truncate">{label}</span>
       </span>
     );
   }
 
   if (ref_.source === "icij" && ref_.node_id) {
-    const dotClass = node ? NODE_LABEL_DOT[node.label] : "bg-zinc-500";
+    const dotColor = node
+      ? SOURCE_SYSTEM_META[sourceSystemOf(node.source_system)].color
+      : SOURCE_SYSTEM_META.icij.color;
     const displayName = node?.name ?? `node ${ref_.node_id.slice(-6)}`;
     return (
       <HoverCard>
@@ -498,37 +525,43 @@ function ClaimSourceChip({
             <button
               onClick={() => ref_.node_id && onFocusNode?.(ref_.node_id)}
               className={cn(
-                "inline-flex items-center gap-1 rounded-full border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-300",
-                "transition hover:border-sky-500/60 hover:bg-zinc-800 hover:text-sky-200"
+                "inline-flex items-center gap-1 rounded-full border border-border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground",
+                "cursor-pointer transition-colors hover:border-foreground/40 hover:text-foreground"
               )}
             />
           }
         >
           <span className="font-medium tabular-nums">[{index}]</span>
-          <span className={cn("h-1.5 w-1.5 rounded-full", dotClass)} />
+          <span
+            className="h-1.5 w-1.5 rounded-full border bg-card"
+            style={{ borderColor: dotColor }}
+          />
           <span className="max-w-[140px] truncate">{displayName}</span>
         </HoverCardTrigger>
-        <HoverCardContent className="w-72 border-zinc-700 bg-zinc-900 p-3 text-xs text-zinc-200">
+        <HoverCardContent className="w-72 border-border bg-card p-3 text-xs text-foreground shadow-md">
           <div className="mb-1 flex items-center gap-1.5">
-            <span className={cn("h-2 w-2 rounded-full", dotClass)} />
-            <span className="text-[10px] uppercase tracking-wide text-zinc-500">
+            <span
+              className="h-2 w-2 rounded-full border bg-card"
+              style={{ borderColor: dotColor }}
+            />
+            <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">
               {node?.label ?? "ICIJ node"}
             </span>
             {ref_.leak && (
-              <span className="ml-auto text-[10px] text-zinc-500">
+              <span className="ml-auto text-[10px] text-muted-foreground">
                 {ref_.leak}
               </span>
             )}
           </div>
-          <div className="break-words font-medium text-zinc-100">
+          <div className="break-words font-medium text-foreground">
             {displayName}
           </div>
           {node?.source && !ref_.leak && (
-            <div className="mt-1 text-[10px] text-zinc-500">
+            <div className="mt-1 text-[10px] text-muted-foreground">
               source: {node.source}
             </div>
           )}
-          <div className="mt-2 flex items-center gap-1 text-[10px] text-sky-300">
+          <div className="mt-2 flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">
             <FileText className="h-3 w-3" /> click to focus in graph
           </div>
         </HoverCardContent>
@@ -538,7 +571,7 @@ function ClaimSourceChip({
 
   // Fallback: leak-only ref.
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-zinc-800 bg-zinc-950 px-1.5 py-0.5 text-[10px] text-zinc-500">
+    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
       <span className="tabular-nums">[{index}]</span>
       <span>{ref_.leak ?? ref_.source}</span>
     </span>
