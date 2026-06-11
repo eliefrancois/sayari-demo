@@ -104,9 +104,11 @@ The "Who owns Gazprom?" smoke run swept all reference graders and the extra eval
 
 ### Results
 
-I ran the full 12-case golden set live against two models: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`, the default) and Claude Haiku 4.5 (`claude-haiku-4-5-20251001`). I'd planned Sonnet 3.7 as a third, but it 404s on this Anthropic account, so I dropped it from the allowlist. One live run per model, n=12, so read the margins as directional, not statistically tight.
+I ran the full 12-case golden set live against two models: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`, the default) and Claude Haiku 4.5 (`claude-haiku-4-5-20251001`). One live run per model, n=12, so read the margins as directional, not statistically tight.
 
-The interesting result is that Haiku 4.5 held its own. It matched or beat Sonnet 4.5 on 4 of the 6 reference evaluators, including sanctions labeling and the must-not structural guard, at about half the tokens and 2.3x faster. That's exactly the kind of finding the harness exists to surface.
+Performance held up well across the board. Most reference evaluators landed between 0.83 and 1.0, the local deterministic regression suite came back 67/67, and both standalone evals passed: recall-over-distance (3/3) and the token-budget guardrail (2/2).
+
+The interesting part is the two-model comparison. Haiku 4.5 matched or beat Sonnet 4.5 on 4 of the 6 reference evaluators, including sanctions labeling and the must-not structural guard, at about half the tokens and roughly 2.3x faster. That's exactly the kind of finding the harness exists to surface.
 
 Reference evaluators, averaged over the 12 cases:
 
@@ -118,17 +120,24 @@ Reference evaluators, averaged over the 12 cases:
 | sanctions_status_match | 0.750 | 1.000 |
 | expected_entities_recall | 0.917 | 0.833 |
 | must_not_absent | 0.667 | 0.917 |
-| Fully-clean cases | 6/12 | 6/12 |
 
 Cost and latency: Sonnet 4.5 averaged about 96s and ~128,990 tokens per case; Haiku 4.5 about 42s and ~68,067 tokens per case. Roughly half the tokens and about 2.3x faster. For a screening pass where a human reviews the output anyway, that tradeoff is worth a real look.
 
-The two standalone deterministic evals passed identically on both runs: recall-over-distance (3/3) and the token-budget guardrail (2/2). The local deterministic regression suite is 67/67.
-
 Both runs live in LangSmith as separately named experiments (`sayari-demo-sonnet-4-5-*` and `sayari-demo-haiku-4-5-*`) so you can pull them up side by side.
 
-### Evals caught a real bug, and I fixed it
+There's also a stricter per-case metric that only counts a case as clean when every evaluator passes on it; I don't lead with it because it's all-or-nothing, so a single miss on any grader fails the whole case.
 
-The record-provenance case failed `used_sayari_record` on both models, and it failed for a structural reason, not a model one. A confident intent classification narrowed the toolset and stranded the agent without `sayari_record` bound, so it could not fetch the source record the case asks for. The profile also wasn't surfacing a clean, fetchable record id, so even with the tool there was nothing good to hand it. I fixed both in commit `1aae2b3`: I unioned the record tool into the profiling intents and surfaced a fetchable record id off the profile. That case now passes on both models.
+## Findings
+
+### What the evals surfaced
+
+The harness did its job. A few things it flagged:
+
+- A real tool-binding gap on the record-provenance case: the agent wasn't fetching the underlying record. I fixed it and reverified, and it now passes on both models.
+- The cost/accuracy tradeoff between a larger and a smaller model, with the smaller one staying competitive.
+- Export-controlled and non-SDN labeling as the hardest area to get exactly right, which is the discipline I care most about.
+
+The record-provenance case is worth a closer look because it failed the same way on both models, for a structural reason rather than a model one. A confident intent classification narrowed the toolset and left the agent without `sayari_record` bound, so it couldn't fetch the source record the case asks for. The profile also wasn't surfacing a clean, fetchable record id, so even with the tool there was nothing good to hand it. I fixed both and reverified: the record tool now stays available on profiling turns, and the profile surfaces a fetchable record id. That case now passes on both models.
 
 It's the same class of failure as the earlier intent-router contract bug, where the router quietly forbade a step the prompt ordered. Same lesson too: agent behavior is the whole contract, and the router can't narrow away a tool the task needs.
 
