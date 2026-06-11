@@ -209,7 +209,7 @@ export function GroupSummaryOverlay({
     const rawGroups: (GroupBounds & { nodeIdSet: Set<string> })[] = [];
 
     for (const summary of summaries) {
-      if (summary.nodeIds.length <= 1) continue;
+      if (summary.nodeIds.length === 0) continue;
 
       const memberNodes = summary.nodeIds
         .map((id) => nodeMap.get(id))

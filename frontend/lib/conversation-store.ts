@@ -595,10 +595,17 @@ function applyEvent(state: ConversationState, evt: StreamEvent): ConversationSta
         unpinnedLeadNodes = (evt.data.all_lead_nodes ?? []).filter((n) => !n.pinned);
         showUnpinnedLeads = false;
       }
+      // Shortest-path turns: highlight only the chain nodes so the path reads
+      // against the accumulated neighborhood bloat from prior investigations.
+      let highlightedNodeIds = state.highlightedNodeIds;
+      if (evt.data.tool === "sayari_shortest_path" && evt.data.nodes.length > 0) {
+        highlightedNodeIds = new Set(evt.data.nodes.map((n) => n.id));
+      }
       return {
         ...state,
         nodes,
         edges,
+        highlightedNodeIds,
         latestSearchMeta,
         unpinnedLeadNodes,
         showUnpinnedLeads,

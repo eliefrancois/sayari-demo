@@ -61,7 +61,7 @@ import {
   type TurnFlowNode,
 } from "./TurnNode";
 import { GroupSummaryOverlay } from "./GroupSummaryOverlay";
-import { buildFallbackGroupSummaries } from "@/lib/groupClustering";
+import { buildTurnGroupSummaries } from "@/lib/groupClustering";
 import type { GroupSummary } from "@/lib/groupSummary";
 
 type CanvasFlowNode = TurnFlowNode | DraftFlowNode;
@@ -422,19 +422,15 @@ function InvestigationCanvasInner({
 
   /* ── semantic branch labels (donor: lmcanvas GroupSummaryOverlay) ──────── */
 
-  // Cluster turns by user-message text (Jaccard) and derive heuristic titles.
-  // Candidates key on the canvas node id so the overlay can match the rendered
-  // turn nodes; only placed, non-empty turns participate.
+  // One label per placed turn, titled from the user message (not Jaccard clusters).
   const groupSummaries = useMemo<GroupSummary[]>(() => {
     const candidates = state.turns
       .filter((t) => positions.has(canvasIdOf(t)))
       .map((t) => ({ nodeId: canvasIdOf(t), prompt: t.userMessage }))
       .filter((c) => c.prompt.trim().length > 0);
-    if (candidates.length < 2) return [];
-    return buildFallbackGroupSummaries(candidates).map((g) => ({
-      // Stable id from the sorted member set so unchanged groups keep identity
-      // (and their enter/exit animation) across re-renders.
-      id: [...g.nodeIds].sort().join("|"),
+    if (candidates.length === 0) return [];
+    return buildTurnGroupSummaries(candidates).map((g) => ({
+      id: g.nodeIds[0] ?? g.title,
       title: g.title,
       nodeIds: g.nodeIds,
     }));

@@ -203,7 +203,7 @@ function computeSubjectAnchors(
     return anchors;
   }
   // Radius grows with subject count so neighborhoods don't crowd each other.
-  const radius = Math.max(320, count * 150);
+  const radius = Math.max(480, count * 220);
   sorted.forEach((id, i) => {
     const theta = (2 * Math.PI * i) / count - Math.PI / 2;
     anchors.set(id, { x: radius * Math.cos(theta), y: radius * Math.sin(theta) });
@@ -214,10 +214,20 @@ function computeSubjectAnchors(
 /** Layout target for a node: centroid of its subjects' anchors, else origin. */
 function layoutTarget(
   node: ERGraphNode,
-  anchors: Map<string, { x: number; y: number }>
+  anchors: Map<string, { x: number; y: number }>,
+  grouped = false
 ): { x: number; y: number } {
   const subs = (node.subject_ids ?? []).filter((s) => anchors.has(s));
-  if (subs.length === 0) return { x: 0, y: 0 };
+  if (subs.length === 0) {
+    // Ungrouped nodes (no subject_ids) used to pile at origin and swallow the
+    // path between subject neighborhoods. Scatter them on an outer ring instead.
+    if (grouped && anchors.size > 0) {
+      const outerR = Math.max(480, anchors.size * 220) * 0.6;
+      const angle = ((hashStr(node.id) % 360) * Math.PI) / 180;
+      return { x: outerR * Math.cos(angle), y: outerR * Math.sin(angle) };
+    }
+    return { x: 0, y: 0 };
+  }
   let x = 0;
   let y = 0;
   for (const s of subs) {
@@ -476,7 +486,7 @@ function GraphPanelInner({
     const simNodes: SimNode[] = visibleNodes.map((n) => {
       const prev = positionsRef.current.get(n.id);
       const isSubject = n.id === subjectId;
-      const target = layoutTarget(n, subjectAnchors);
+      const target = layoutTarget(n, subjectAnchors, grouped);
       const sn: SimNode = {
         id: n.id,
         raw: n,
@@ -539,13 +549,13 @@ function GraphPanelInner({
       .force(
         "groupX",
         forceX<SimNode>((d) => d.tx).strength(
-          grouped ? (subjectAnchors.size > 1 ? 0.16 : 0.04) : 0
+          grouped ? (subjectAnchors.size > 1 ? 0.3 : 0.04) : 0
         )
       )
       .force(
         "groupY",
         forceY<SimNode>((d) => d.ty).strength(
-          grouped ? (subjectAnchors.size > 1 ? 0.16 : 0.04) : 0
+          grouped ? (subjectAnchors.size > 1 ? 0.3 : 0.04) : 0
         )
       )
       // Cool down a bit faster than default so the sim doesn't wobble forever.
@@ -690,7 +700,10 @@ function GraphPanelInner({
         };
       }
       if (hasHi && highlightedNodeIds!.has(n.id)) {
-        return { ...n, style: { ...n.style, boxShadow: HIGHLIGHT_GLOW } };
+        return { ...n, style: { ...n.style, boxShadow: HIGHLIGHT_GLOW, opacity: 1 } };
+      }
+      if (hasHi) {
+        return { ...n, style: { ...n.style, opacity: 0.28 } };
       }
       if (scopedDelta) {
         if (scopedDelta.nodeIds.has(n.id)) {
@@ -729,47 +742,88 @@ function GraphPanelInner({
     });
   }, [rfEdges, scopedDelta]);
 
-  // Subject id -> display name, for hull labels. A subject's name is the name
-  // of its own node when that node is on the canvas; otherwise show a short id.
+  // Subject id -> display name, for hull labels. Prefer the subject entity's own
+  // node name when it sits on the canvas.
   const subjectLabels = useMemo(() => {
     const byId = new Map(visibleNodes.map((n) => [n.id, n.name] as const));
     const labels = new Map<string, string>();
     for (const n of visibleNodes) {
       for (const s of n.subject_ids ?? []) {
-        if (s && !labels.has(s)) labels.set(s, byId.get(s) ?? `…${s.slice(-6)}`);
+        if (!s || labels.has(s)) continue;
+        const resolved = byId.get(s);
+        labels.set(s, resolved && resolved !== "(unnamed)" ? resolved : `…${s.slice(-6)}`);
       }
     }
     return labels;
   }, [visibleNodes]);
 
-  // Subject-grouped hull regions (plan Phase 3): collect each subject's member
-  // node centers in flow coordinates from the live React Flow positions. Derived
-  // from rfNodes so hulls track the simulation as it settles and follow drags.
+  // Primary subjects: entity ids that exist as nodes on the canvas (investigation
+  // roots). Hulls are drawn only for these — not for stray ids or shared hops.
+  const primarySubjectIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const n of visibleNodes) {
+      if (n.id && (n.subject_ids ?? []).includes(n.id)) ids.add(n.id);
+    }
+    return ids;
+  }, [visibleNodes]);
+
+  const MAX_HULL_POINTS = 12;
+
+  // Subject-grouped hull regions: use exclusive members + the subject root so a
+  // dense subsidiary cloud doesn't inflate one giant blob. Shared intermediaries
+  // (multi-subject) shape layout overlap but are excluded from hull geometry.
   const hullGroups = useMemo<HullGroup[]>(() => {
-    if (subjectLabels.size === 0) return [];
+    if (subjectLabels.size === 0 || primarySubjectIds.size === 0) return [];
     const points = new Map<string, [number, number][]>();
     for (const rn of rfNodes) {
       const raw = (rn.data as { raw?: ERGraphNode }).raw;
-      const subs = raw?.subject_ids ?? [];
+      if (!raw) continue;
+      const subs = raw.subject_ids ?? [];
       if (!subs.length) continue;
       const cx = rn.position.x + NODE_HALF_W;
       const cy = rn.position.y + NODE_HALF_H;
       for (const s of subs) {
+        if (!primarySubjectIds.has(s)) continue;
+        const isRoot = raw.id === s;
+        const exclusive = subs.length === 1 && subs[0] === s;
+        if (!isRoot && !exclusive) continue;
         const arr = points.get(s);
         if (arr) arr.push([cx, cy]);
         else points.set(s, [[cx, cy]]);
       }
     }
     const groups: HullGroup[] = [];
-    for (const [subjectId, pts] of points) {
-      groups.push({
-        subjectId,
-        label: subjectLabels.get(subjectId) ?? `…${subjectId.slice(-6)}`,
-        points: pts,
-      });
+    for (const subjectId of [...primarySubjectIds].sort()) {
+      let pts = points.get(subjectId);
+      if (!pts?.length) continue;
+      if (pts.length > MAX_HULL_POINTS) {
+        const rootPt = pts.find((p) =>
+          rfNodes.some((rn) => {
+            const raw = (rn.data as { raw?: ERGraphNode }).raw;
+            return (
+              raw?.id === subjectId &&
+              rn.position.x + NODE_HALF_W === p[0] &&
+              rn.position.y + NODE_HALF_H === p[1]
+            );
+          })
+        );
+        const anchor = rootPt ?? pts[0];
+        const rest = pts
+          .filter((p) => p !== rootPt)
+          .sort(
+            (a, b) =>
+              Math.hypot(a[0] - anchor[0], a[1] - anchor[1]) -
+              Math.hypot(b[0] - anchor[0], b[1] - anchor[1])
+          )
+          .slice(0, MAX_HULL_POINTS - (rootPt ? 1 : 0));
+        pts = rootPt ? [rootPt, ...rest] : rest;
+      }
+      const label = subjectLabels.get(subjectId);
+      if (!label || label.startsWith("…")) continue;
+      groups.push({ subjectId, label, points: pts });
     }
     return groups;
-  }, [rfNodes, subjectLabels]);
+  }, [rfNodes, subjectLabels, primarySubjectIds]);
 
   const [menu, setMenu] = useState<ContextMenuState>(null);
   const [hover, setHover] = useState<HoverState>(null);

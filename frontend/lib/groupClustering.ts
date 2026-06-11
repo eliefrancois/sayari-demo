@@ -271,6 +271,42 @@ function mergeClosestGroups(
   return merged;
 }
 
+/** Readable canvas label from a turn's user message (not Jaccard keyword soup). */
+export function titleFromPrompt(prompt: string): string {
+  const trimmed = prompt.replace(/\s+/g, " ").trim();
+  if (!trimmed) return "Turn";
+
+  const stripped = trimmed
+    .replace(
+      /^(please\s+)?((investigate|analyze|explore|profile|research|look\s+into|tell\s+me\s+about)\s+)/i,
+      ""
+    )
+    .replace(
+      /^(what\s+is\s+(the\s+)?(connection|relationship|link|path)\s+between\s+)/i,
+      ""
+    )
+    .replace(
+      /^(how\s+(is|are)\s+.+\s+connected\s+to\s+)/i,
+      ""
+    )
+    .replace(/\?$/, "")
+    .trim();
+
+  const source = stripped.length >= 3 ? stripped : trimmed;
+  return toBookTitleCase(clipTitleWords(source, 8));
+}
+
+/** One overlay group per turn, titled from the user message directly. */
+export function buildTurnGroupSummaries(
+  candidates: GroupSummaryCandidate[],
+): GeneratedGroupSummary[] {
+  return candidates.map((candidate) => ({
+    title: titleFromPrompt(candidate.prompt),
+    nodeIds: [candidate.nodeId],
+    metadata: { confidence: 0.9 },
+  }));
+}
+
 export function groupPairCandidates(
   candidates: GroupSummaryCandidate[],
 ): PairGroup[] {

@@ -38,7 +38,13 @@ const HULL_PADDING = 58;
 // Corner smoothing as a fraction of each edge — keeps the region organic, not
 // a hard polygon. 0 = sharp polygon, ~0.18 = pleasantly rounded.
 const SMOOTHING = 0.18;
-const NEUTRAL = "var(--foreground)";
+const MAX_HULL_LABELS = 6;
+// Subtle per-subject hues — neutral family, distinct enough to read two regions.
+const HULL_FILLS = [
+  "color-mix(in oklab, var(--source-sayari) 18%, var(--foreground))",
+  "color-mix(in oklab, var(--source-sanctions) 16%, var(--foreground))",
+  "color-mix(in oklab, var(--risk-elevated) 14%, var(--foreground))",
+];
 
 /** Centroid of a point cloud. */
 function centroid(points: [number, number][]): [number, number] {
@@ -149,19 +155,19 @@ export function EntityHullOverlay({ groups }: EntityHullOverlayProps) {
         height={1}
       >
         <g style={{ mixBlendMode: "multiply" }}>
-          {regions.map(({ group, region }) => (
+          {regions.map(({ group, region }, index) => (
             <path
               key={`hull-${group.subjectId}`}
               d={region.path}
-              fill={NEUTRAL}
-              fillOpacity={0.07}
-              stroke={NEUTRAL}
-              strokeOpacity={0.18}
+              fill={HULL_FILLS[index % HULL_FILLS.length]}
+              fillOpacity={0.09}
+              stroke={HULL_FILLS[index % HULL_FILLS.length]}
+              strokeOpacity={0.22}
               strokeWidth={1.5}
             />
           ))}
         </g>
-        {regions.map(({ group, region }) => (
+        {regions.slice(0, MAX_HULL_LABELS).map(({ group, region }) => (
           <text
             key={`hull-label-${group.subjectId}`}
             x={region.labelAt[0]}
@@ -169,11 +175,9 @@ export function EntityHullOverlay({ groups }: EntityHullOverlayProps) {
             textAnchor="middle"
             style={{
               fill: "var(--muted-foreground)",
-              fontFamily: "var(--font-geist-mono), monospace",
+              fontFamily: "var(--font-geist-sans), system-ui, sans-serif",
               fontSize: 11,
-              letterSpacing: "0.14em",
-              textTransform: "uppercase",
-              fontWeight: 500,
+              fontWeight: 600,
             }}
           >
             {group.label}
