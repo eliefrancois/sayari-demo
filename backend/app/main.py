@@ -172,7 +172,7 @@ class MessageRequest(BaseModel):
     parent_turn_id: str | None = None
     # Optional per-request main-agent model override. Allowlisted in
     # agent_common.resolve_model; anything off the list (or None) falls back to
-    # the default Sonnet 4.5. No UI sends this today — it exists for eval runs
+    # the default Sonnet 4.5. No UI sends this today; it exists for eval runs
     # and API callers comparing model families.
     model: str | None = None
 
@@ -213,7 +213,7 @@ async def list_conversations(limit: int = 50) -> ConversationListResponse:
 
     Ids whose meta already expired (24h per-key TTL) are filtered out and
     lazily removed from the index. Conversations created before the index
-    existed don't appear — this is a recents menu, not an archive."""
+    existed don't appear; this is a recents menu, not an archive."""
     limit = max(1, min(limit, 100))
     items = await conversations.list_conversations(limit)
     return ConversationListResponse(
@@ -225,7 +225,7 @@ async def list_conversations(limit: int = 50) -> ConversationListResponse:
 async def delete_conversation(conversation_id: str) -> dict:
     """Delete a conversation's whole key family + its index entry.
 
-    Refused (409) while a turn is running — deleting keys mid-turn would have
+    Refused (409) while a turn is running, since deleting keys mid-turn would have
     the background task resurrect some of them on its next write."""
     if not await conversations.exists(conversation_id):
         raise HTTPException(status_code=404, detail="unknown conversation_id")
@@ -270,7 +270,7 @@ async def post_message(conversation_id: str, req: MessageRequest) -> MessageResp
 
     # Branching (graph impl only): register the turn in the tree BEFORE it runs,
     # so the response and the live SSE stream carry its coordinates. With no
-    # parent_turn_id this defaults to the current head — the linear case.
+    # parent_turn_id this defaults to the current head, the linear case.
     turn_id: str | None = None
     parent_turn_id: str | None = None
     if settings.agent_impl == "graph":
@@ -384,7 +384,7 @@ async def conversation_tree(conversation_id: str) -> dict:
 @app.get("/conversations/{conversation_id}/turns/{turn_id}/graph")
 async def turn_path_graph(conversation_id: str, turn_id: str) -> dict:
     """Time-travel payload: the evidence graph accumulated along this turn's
-    path (root -> turn, union of that path's per-turn deltas only — sibling
+    path (root -> turn, union of that path's per-turn deltas only, sibling
     branches excluded), plus the turn's OWN delta separately so the frontend
     can pulse new-this-turn nodes and dim inherited ones."""
     if not await conversations.exists(conversation_id):

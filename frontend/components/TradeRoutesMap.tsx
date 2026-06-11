@@ -27,10 +27,10 @@ const GEO_URL = "/maps/countries-110m.json";
 // JSON imports type as number[]; the asset is generated as [lng, lat] pairs.
 const CENTROIDS = centroidsJson as unknown as Record<string, [number, number]>;
 
-const COLOR_SANCTIONED = "var(--risk-critical)"; // red — a directly sanctioned party on the lane
-const COLOR_DUAL_USE = "var(--risk-elevated)"; // amber — HS screen or native BIS tag fired
-const COLOR_CLEAN = "var(--ring)"; // neutral gray — no risk signal
-const COLOR_MARKER = "var(--source-sayari)"; // indigo — Sayari source dot
+const COLOR_SANCTIONED = "var(--risk-critical)"; // red: a directly sanctioned party on the lane
+const COLOR_DUAL_USE = "var(--risk-elevated)"; // amber: HS screen or native BIS tag fired
+const COLOR_CLEAN = "var(--ring)"; // neutral gray: no risk signal
+const COLOR_MARKER = "var(--source-sayari)"; // indigo: Sayari source dot
 
 function routeColor(r: TradeRoute): string {
   if (r.sanctioned_party) return COLOR_SANCTIONED;

@@ -142,7 +142,7 @@ async def _known_entity_lookup(conversation_id: str | None) -> dict[str, dict[st
     subjects, cached risk-path names, AND sanctions hits with the richer-source-
     wins merge policy applied. Lets a risk-path node be named from earlier turns
     even when the current profile's relationships block doesn't carry it. Pure
-    state read — no external calls, no credits. Fails open to {} so a Redis
+    state read, no external calls, no credits. Fails open to {} so a Redis
     hiccup never breaks an investigation."""
     if not conversation_id:
         return {}
@@ -272,7 +272,7 @@ async def sayari_search_tool(query: str, limit: int = 10) -> dict[str, Any]:
         "count": len(candidates),
         "nodes": [n.model_dump() for n in nodes],
         # Full lead set as overlay-ready nodes (pinned flag per node). NOT merged
-        # into the persistent graph — purely a per-search client-side overlay.
+        # into the persistent graph, purely a per-search client-side overlay.
         "all_lead_nodes": all_lead_nodes,
         # The subset actually shown on the graph; the agent should highlight these
         # first so its prose and the canvas agree.
@@ -300,7 +300,7 @@ async def sayari_summary_tool(
     raw = await asyncio.to_thread(sayari.summary, entity_id)
     slim = slim_sayari_profile(raw)
     # entity_summary is relationship-free, so the profile carries no relationships
-    # block to name path nodes from — fall back to conversation-known entities,
+    # block to name path nodes from; fall back to conversation-known entities,
     # then the placeholder.
     id_lookup = {
         **(await _known_entity_lookup(conversation_id)),
@@ -403,7 +403,7 @@ async def sayari_trade_tool(
 async def sayari_shortest_path_tool(
     source_id: str, target_id: str, conversation_id: str | None = None
 ) -> dict[str, Any]:
-    """Tier 2: the shortest relationship chain between two Sayari entities —
+    """Tier 2: the shortest relationship chain between two Sayari entities,
     the 'hidden chain' between a clean subject and a sanctioned/risky target."""
     raw = await asyncio.to_thread(sayari.shortest_path, source_id, target_id)
     sp = sayari.parse_shortest_path(raw, source_id, target_id)
@@ -531,7 +531,7 @@ async def recall_state_tool(
         # Deterministic self-correction hint: this ledger holds only the
         # adjudicated OpenSanctions verdicts. Registry entities that carry a
         # sanctioned flag from OTHER provenance (e.g. Sayari risk factors on a
-        # traversed subsidiary) live in kind="entities" — an enumeration of
+        # traversed subsidiary) live in kind="entities"; an enumeration of
         # "which X were sanctioned" that reads only this ledger under-counts.
         ledger_ids = {r.get("sanctions_id") for r in (doc.get("sanctions_adjudicated") or [])}
         registry_extra = [
@@ -556,7 +556,7 @@ async def recall_state_tool(
     if kind == "entities":
         # The unified registry: the FULL connected-entity pool (ownership
         # neighbors + search leads + sanctions hits), one rankable set. This is
-        # what answers "the most sanctioned connected entity" — rank across ALL
+        # what answers "the most sanctioned connected entity": rank across ALL
         # of it, not just the resolved subjects.
         recs = [
             _entity_view(r)
@@ -1246,13 +1246,13 @@ async def execute_tool(
 ) -> str:
     """Run a tool by name. Returns a JSON string (what we'll send back to Claude
     as tool_result content). Wraps errors so a bad tool call doesn't crash the
-    agent loop — Claude can read the error and decide what to do.
+    agent loop, so Claude can read the error and decide what to do.
 
     `conversation_id` is injected by the caller for the memory tools (see
     `_NEEDS_CONVERSATION_ID`); it is NOT part of the model-visible schema, so the
     model can neither set nor spoof it.
     """
-    # 'args' is reserved on LogRecord (printf-style logging) — use tool_args.
+    # 'args' is reserved on LogRecord (printf-style logging), so use tool_args.
     log.info("tool_call", extra={"tool": name, "tool_args": arguments})
     try:
         if name in _ASYNC:
@@ -1266,7 +1266,7 @@ async def execute_tool(
             return json.dumps({"error": f"unknown tool: {name}"})
         return json.dumps(result, default=str)
     except TypeError as e:
-        # Bad arguments — Claude can read this and retry with correct shape.
+        # Bad arguments: Claude can read this and retry with correct shape.
         log.warning("tool_bad_args", extra={"tool": name, "error": str(e)})
         return json.dumps({"error": f"bad arguments for {name}: {e}"})
     except Exception as e:

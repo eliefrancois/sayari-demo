@@ -10,15 +10,15 @@ import { polygonHull } from "d3-polygon";
  * Each subject the backend attributed nodes to (GraphNode.subject_ids) gets a
  * translucent convex-hull region enclosing its member nodes. A node shared by
  * two subjects (e.g. a shortest-path intermediary) is a member of both hulls
- * and — because the group-aware layout pulls it to the centroid of its
- * subjects' anchors — physically sits in the overlap. The fills use
+ * and, because the group-aware layout pulls it to the centroid of its
+ * subjects' anchors, physically sits in the overlap. The fills use
  * `mix-blend-mode: multiply`, so wherever two hulls overlap the region reads
  * DARKER: that darker zone IS the shared-membership intersection, with no extra
  * geometry needed.
  *
  * Rendered through `ViewportPortal` so the SVG lives inside React Flow's
  * viewport transform (pans/zooms with the graph) and behind the node layer.
- * Color is intentionally neutral — the graph reserves saturated color for the
+ * Color is intentionally neutral: the graph reserves saturated color for the
  * source ring and risk glow (docs/04-tier3-ux-spec.md §2).
  */
 
@@ -35,11 +35,11 @@ export interface EntityHullOverlayProps {
 
 // Outward padding (flow units) so the hull clears the node pills it wraps.
 const HULL_PADDING = 58;
-// Corner smoothing as a fraction of each edge — keeps the region organic, not
+// Corner smoothing as a fraction of each edge, keeps the region organic, not
 // a hard polygon. 0 = sharp polygon, ~0.18 = pleasantly rounded.
 const SMOOTHING = 0.18;
 const MAX_HULL_LABELS = 6;
-// Subtle per-subject hues — neutral family, distinct enough to read two regions.
+// Subtle per-subject hues: neutral family, distinct enough to read two regions.
 const HULL_FILLS = [
   "color-mix(in oklab, var(--source-sayari) 18%, var(--foreground))",
   "color-mix(in oklab, var(--source-sanctions) 16%, var(--foreground))",
@@ -142,7 +142,7 @@ export function EntityHullOverlay({ groups }: EntityHullOverlayProps) {
     <ViewportPortal>
       <svg
         // Anchored at the flow origin; overflow visible so hulls at negative
-        // coordinates still paint. Non-interactive — purely decorative.
+        // coordinates still paint. Non-interactive, purely decorative.
         style={{
           position: "absolute",
           left: 0,

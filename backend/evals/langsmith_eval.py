@@ -37,7 +37,7 @@ DATASET_NAME = "sayari-demo"
 # model family. Guarded behind --judge so it never spends credits implicitly.
 _JUDGE_MODEL = MODEL
 
-# A row is (case, check, passed, comment) — the same shape run_evals prints.
+# A row is (case, check, passed, comment), the same shape run_evals prints.
 Row = tuple[str, str, bool, str]
 
 # The main-agent model for this run, set from --model in main(). None = the
@@ -157,7 +157,7 @@ def report_ready_match(outputs: dict[str, Any], example: Any) -> dict[str, Any]:
 
 
 # Each expected sanctions label maps to the structured check that encodes its
-# labeling discipline — so name_collision / non_sdn are graded by the existing
+# labeling discipline, so name_collision / non_sdn are graded by the existing
 # hedge / non-SDN guards rather than a naive string compare.
 _SANCTIONS_DISPATCH: dict[str, Callable[[dict[str, Any]], tuple[bool, str]]] = {
     "sanctioned": run_evals.sanctions_present,
@@ -194,7 +194,7 @@ def expected_entities_recall(outputs: dict[str, Any], example: Any) -> dict[str,
 
 def _asserts_sdn(out: dict[str, Any]) -> bool:
     """Affirmative 'subject is OFAC SDN' assertion, after neutralizing the legit
-    negative/non-SDN phrasings — mirrors the ofac_non_sdn_labeling guard."""
+    negative/non-SDN phrasings, mirrors the ofac_non_sdn_labeling guard."""
     text = _answer_blob(out).lower()
     neutral = (
         text.replace("non-sdn", " ")
@@ -375,7 +375,7 @@ def load_dataset(client: Any) -> Any:
 async def recall_over_distance_rows(n_intervening: int = 3) -> list[Row]:
     """Establish sanctioned Rosneft subsidiaries on turn 1, run N intervening
     turns on unrelated subjects, then assert the turn-1 entities + the dismissed
-    name-collision SDN row are STILL recoverable via recall_state — exercising the
+    name-collision SDN row are STILL recoverable via recall_state, exercising the
     real state_doc write+read path across distance (doc 09 §F memory regression
     net). Deterministic: it persists structured deltas exactly as production does
     and reads them back through the real recall tool; no model, no Redis, no
@@ -507,7 +507,7 @@ def _make_state_doc(n_entities: int, n_leads: int, n_sanctions: int) -> dict[str
 
 def token_budget_rows() -> list[Row]:
     """The assembled per-turn context must stay within MAX_TOKENS_PER_TURN even as
-    structured state grows unboundedly — the context-stuffing guardrail (doc 09
+    structured state grows unboundedly, the context-stuffing guardrail (doc 09
     §6 / Phase C). Assert (1) the fully-assembled context for a HUGE investigation
     fits the budget, and (2) the injected INVESTIGATION STATE core does not scale
     with case size (a huge state_doc renders a core no materially larger than a
@@ -589,7 +589,7 @@ async def run_dry(limit: int | None) -> int:
           f"{len(meta_evaluators)} metadata-check (+1 LLM judge when --judge)")
 
     # Validate every reference evaluator is well-formed against a SYNTHETIC target
-    # output graded vs a REAL example — proves the wiring without an agent call.
+    # output graded vs a REAL example, proves the wiring without an agent call.
     sample = examples[0]
     synthetic = {
         "kind": "answer",

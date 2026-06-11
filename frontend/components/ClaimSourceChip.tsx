@@ -126,7 +126,7 @@ export function ClaimSourceChip({
     );
   }
 
-  // Fallback: leak-only ref (still meaningful — the leak name, never "source").
+  // Fallback: leak-only ref (still meaningful: the leak name, never "source").
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
       <span className="tabular-nums">[{index}]</span>

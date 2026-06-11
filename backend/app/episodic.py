@@ -23,7 +23,7 @@ log = logging.getLogger("erre.episodic")
 _NAMESPACE_CAP = 200
 
 # Park et al. (Generative Agents) weighted ranking: a memory's retrieval score is
-# a weighted sum of similarity (relevance), recency, and salience (importance) —
+# a weighted sum of similarity (relevance), recency, and salience (importance),
 # NOT raw cosine similarity (doc 09 §2 "Recency x importance x relevance"). These
 # weights are the knob; similarity leads, recency and salience re-rank ties.
 _W_SIMILARITY = 0.5
@@ -40,7 +40,7 @@ _index_creds: tuple[str, str] | None = None
 
 def is_enabled() -> bool:
     """True ONLY when the feature flag is on AND both Upstash Vector creds are
-    present. The single gate every public function checks — when this is False,
+    present. The single gate every public function checks: when this is False,
     the whole subsystem is a no-op and the existing flow is untouched."""
     s = get_settings()
     return bool(
@@ -76,7 +76,7 @@ def _get_index() -> Any:
 
 def _salience(delta: dict[str, Any]) -> float:
     """Seed an episode's importance from signals already in the structured
-    delta (doc 09 §7: 'salience seeded from signals — sanctioned/PEP -> high').
+    delta (doc 09 §7: 'salience seeded from signals, sanctioned/PEP -> high').
     Pure: no LLM, no network. Range [0, 1]."""
     score = 0.3  # a turn happened at all
     sanc = delta.get("sanctions_adjudicated") or []
@@ -104,7 +104,7 @@ def build_episode(
     parent_turn_id: str | None = None,
 ) -> dict[str, Any]:
     """Build ONE structured episode from the turn's STRUCTURED outputs (the same
-    `_build_state_delta` projection L3 persists) — never the prose answer. Pure
+    `_build_state_delta` projection L3 persists), never the prose answer. Pure
     and deterministic, so it is unit-testable and carries no hallucination risk.
 
     Returns a dict with the episode fields (doc 09 Phase D): conversation_id,
@@ -164,7 +164,7 @@ def build_episode(
 
     tools = sorted(set(tools_used or []))
 
-    # The compact text blob that gets embedded — built DETERMINISTICALLY from the
+    # The compact text blob that gets embedded, built DETERMINISTICALLY from the
     # structured fields above. Stable wording so re-embedding the same turn is
     # idempotent. This is what a fuzzy "what did we find about X" matches on.
     text_parts: list[str] = []
@@ -185,7 +185,7 @@ def build_episode(
         "turn": turn_index,
         # Branching (Stage 2a): tree coordinates ride on every episode so a
         # later path-aware episodic phase can filter by branch. Deliberately
-        # NOT used for filtering yet — this just keeps the store unpoisoned.
+        # NOT used for filtering yet; this just keeps the store unpoisoned.
         "turn_id": turn_id,
         "parent_turn_id": parent_turn_id,
         "intent": intent,
@@ -298,7 +298,7 @@ async def query_episodes(
 
     Contract when disabled: returns `{"configured": False, ...}` so the tool can
     tell the agent episodic memory is off and to fall back to recall_state. Never
-    raises — a vector outage degrades to an empty, configured-but-errored result."""
+    raises: a vector outage degrades to an empty, configured-but-errored result."""
     if not is_enabled():
         return {
             "configured": False,

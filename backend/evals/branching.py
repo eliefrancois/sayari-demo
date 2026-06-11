@@ -140,7 +140,7 @@ async def fork_isolation_rows() -> list[Row]:
 
     # The contextvar wiring: inside `turn_scope`, the REAL get_state_doc (the
     # exact function recall_state and the context assembly call in production)
-    # must return the path-scoped doc — no monkeypatched recall here.
+    # must return the path-scoped doc, no monkeypatched recall here.
     scoped_rows = await _scoped_get_state_doc_check(d1, d2a, d2b)
 
     return [
@@ -259,10 +259,10 @@ async def path_graph_rows() -> list[Row]:
     }
     deltas = {
         "t1": gd([n1], []),
-        # t2a re-adds n1 (a traversal revisiting the subject) — must dedupe.
+        # t2a re-adds n1 (a traversal revisiting the subject), must dedupe.
         "t2a": gd([n1, n2], [e12]),
         "t2b": gd([n3], [e13]),
-        "t3a": gd([n4], [e24, e12]),  # e12 repeated — must dedupe to one edge
+        "t3a": gd([n4], [e24, e12]),  # e12 repeated, must dedupe to one edge
     }
 
     path = conversations.path_to(tree, "t3a")
@@ -324,7 +324,7 @@ async def linear_equivalence_rows() -> list[Row]:
         confirmed=[_hit("Rosneft Parent Co", "ofac-parent")],
     )
     # Turn 2 performs a MID-TURN named_ids merge (the risk-path resolver write)
-    # followed by its finalize delta — two deltas attributed to one turn.
+    # followed by its finalize delta: two deltas attributed to one turn.
     d2_mid = {"named_ids": {"e-midturn": {
         "label": "Mid-Turn Resolved Co", "type": "company",
         "sanctioned": False, "pep": False, "countries": ["CYP"],
@@ -377,7 +377,7 @@ async def linear_equivalence_rows() -> list[Row]:
     msgs = ["Investigate Rosneft.", "Map the ownership."]
 
     # Prose digest: a turn's prior context comes from its PARENT's stored
-    # context_after — so a fork from turn 1 starts from turn 1's narrative,
+    # context_after, so a fork from turn 1 starts from turn 1's narrative,
     # not from the sibling turn 2's. Linear continuation (parent = head) gets
     # the head's context_after, which is exactly what the legacy global
     # context string held after that turn.

@@ -31,8 +31,8 @@ def _level_rank(level: str | None) -> int:
 
 
 def _is_direct_factor(name: str) -> bool:
-    """True for direct/categorical risk factors (the headline hits) — directly
-    sanctioned, state-owned, export-controlled — as opposed to ownership-derived
+    """True for direct/categorical risk factors (the headline hits): directly
+    sanctioned, state-owned, export-controlled, as opposed to ownership-derived
     ones that come with a traversal path."""
     if name in _DIRECT_RISK_NAMES:
         return True
@@ -45,12 +45,12 @@ def _is_direct_factor(name: str) -> bool:
 
 # Sayari ships an OFAC record number under a type literally named
 # `usa_ofac_sdn_number`, but OFAC assigns these numbers to BOTH the SDN
-# (blocked) list AND the Consolidated (non-SDN) list — so the field NAME does
+# (blocked) list AND the Consolidated (non-SDN) list, so the field NAME does
 # not prove SDN listing. Huawei, for example, carries usa_ofac_sdn_number=30947
 # yet is on the OFAC Consolidated non-SDN list, not the SDN blocked-persons
 # list. We relabel it to a neutral, accurate type before it reaches the model so
 # OFAC list membership is determined from the `sanctioned_usa_ofac_*` risk
-# factors and check_sanctions `lists` — never inferred from this identifier's
+# factors and check_sanctions `lists`, never inferred from this identifier's
 # name. The value is preserved verbatim for provenance.
 _MISLEADING_IDENTIFIER_TYPES = {
     "usa_ofac_sdn_number": (
@@ -187,7 +187,7 @@ def slim_sayari_profile(entity: dict[str, Any], *, top_n_derived: int = 8) -> di
         "translated_label": entity.get("translated_label"),
         "type": entity.get("type"),
         # A FETCHABLE source-record id the agent can hand to sayari_record for
-        # document-level provenance (see _best_record_id — the raw `reference_id`
+        # document-level provenance (see _best_record_id; the raw `reference_id`
         # carries a ':<hash>' suffix the record API rejects). None when the entity
         # carries no record reference at all.
         "record_id": _best_record_id(entity),
@@ -243,14 +243,14 @@ MODEL = DEFAULT_MODEL
 
 # Allowlist of main-agent Claude models a request may select. Anything off this
 # list (a typo, an unsupported/expensive model, or an injection attempt on the
-# `model` param) silently falls back to DEFAULT_MODEL — an arbitrary string can
+# `model` param) silently falls back to DEFAULT_MODEL, so an arbitrary string can
 # never reach the Anthropic API. The intent-router model is configured
 # separately (settings.intent_router_model, stays on Haiku) and is intentionally
 # NOT part of this allowlist.
 ALLOWED_MODELS: frozenset[str] = frozenset({
     "claude-sonnet-4-5-20250929",  # Sonnet 4.5 (default; the reproducible snapshot)
     "claude-haiku-4-5-20251001",   # Haiku 4.5 (fast/cheap)
-    # NOTE: claude-3-7-sonnet-20250219 was removed — it 404s on this Anthropic
+    # NOTE: claude-3-7-sonnet-20250219 was removed, it 404s on this Anthropic
     # account, so advertising it just lets a request select a broken option. A
     # request that names it now falls back cleanly to DEFAULT_MODEL.
 })
@@ -258,7 +258,7 @@ ALLOWED_MODELS: frozenset[str] = frozenset({
 
 def resolve_model(model: str | None) -> str:
     """The main-agent model for a request: the requested one iff it's on the
-    allowlist, else DEFAULT_MODEL. Never raises — an unknown/empty value falls
+    allowlist, else DEFAULT_MODEL. Never raises; an unknown/empty value falls
     back so a bad `model` param degrades to the default instead of erroring."""
     if model and model in ALLOWED_MODELS:
         return model
@@ -266,8 +266,8 @@ def resolve_model(model: str | None) -> str:
 
 
 # --- Anthropic prompt caching ---------------------------------------------
-# Cache the two large, stable parts of every request — the system prompt and the
-# tool definitions — so they aren't re-billed / re-processed on every turn. A
+# Cache the two large, stable parts of every request (the system prompt and the
+# tool definitions) so they aren't re-billed / re-processed on every turn. A
 # cache breakpoint caches the exact byte prefix up to it, so the cached parts
 # must stay constant across turns; the per-turn DYNAMIC context (INVESTIGATION
 # STATE, the user message, tool results) lives AFTER them in the messages array
@@ -276,7 +276,7 @@ _CACHE_CONTROL = {"type": "ephemeral"}
 
 
 def cached_system(system_prompt: str) -> list[dict[str, Any]]:
-    """System prompt as a single text block with a cache breakpoint at its end —
+    """System prompt as a single text block with a cache breakpoint at its end,
     the raw Anthropic `system=` shape. Also valid as langchain SystemMessage
     content (ChatAnthropic preserves cache_control on text blocks)."""
     return [{"type": "text", "text": system_prompt, "cache_control": _CACHE_CONTROL}]
@@ -336,13 +336,13 @@ _STATE_PRIMARY_CAP = 2  # primary subject(s) under active investigation
 _STATE_PINNED_CAP = 8  # pinned node ids surfaced inline
 _STATE_LEADSETS_CAP = 3  # one header line per recent search
 _STATE_SANCTIONS_CAP = 5  # confirmed sanctions named inline
-# Fallback graph roster (native loop only — no state_doc). The registry pointer
+# Fallback graph roster (native loop only, no state_doc). The registry pointer
 # replaces it on the graph path; this just bounds the legacy path.
 _ROSTER_FALLBACK_CAP = 8
 
 
 def _is_sdn(lists: Any) -> bool:
-    """True if any list label is the OFAC SDN (blocked) list — NOT the OFAC
+    """True if any list label is the OFAC SDN (blocked) list, NOT the OFAC
     Consolidated/non-SDN list (same name-collision discipline the prompt and the
     registry enforce). Local so agent_common stays dependency-light."""
     for x in lists or []:
@@ -364,7 +364,7 @@ def _render_state_block(state_doc: dict[str, Any] | None) -> list[str]:
       - the top few CONFIRMED sanctions BY NAME (high-value, accurate), and
       - a registry pointer (how many entities are tracked + how to rank/enumerate).
 
-    It deliberately does NOT inject the full entity table or full lead lists —
+    It deliberately does NOT inject the full entity table or full lead lists;
     the agent calls `recall_state` for exact, complete rows on demand. Empty list
     when there's nothing structured yet (e.g. turn 1 or eval mode)."""
     if not state_doc:
@@ -386,7 +386,7 @@ def _render_state_block(state_doc: dict[str, Any] | None) -> list[str]:
     ]
 
     # Primary subject(s): the traversed/profiled subjects (resolved_entities),
-    # newest first, capped tiny. NOT raw leads or sanctions-only entities — this
+    # newest first, capped tiny. NOT raw leads or sanctions-only entities; this
     # names the current focus; the registry pointer below covers the full pool.
     subj_recs = sorted(
         (r for r in resolved.values() if isinstance(r, dict) and r.get("entity_id")),
@@ -469,7 +469,7 @@ def _render_state_block(state_doc: dict[str, Any] | None) -> list[str]:
 def bound_context_digest(text: str, keep_last: int = 15) -> str:
     """Bound the running prose digest so it can't grow without limit: keep the
     last `keep_last` turn-digest lines verbatim and roll older ones into a
-    single summary line. Pure string handling — no LLM call. The exact IDs and
+    single summary line. Pure string handling, no LLM call. The exact IDs and
     verdicts those older lines referenced already live in `state_doc` (exact,
     via recall_state), so the roll-up loses only narration, never provenance."""
     if not text:
@@ -497,7 +497,7 @@ def build_context_block(
 
     Cheap to build (no extra LLM call): the fixed-budget `INVESTIGATION STATE`
     core (primary subject, pinned ids, lead-set headers, confirmed sanctions, and
-    a registry pointer — the navigation handle into structured state) on top of a
+    a registry pointer, the navigation handle into structured state) on top of a
     running prose digest. `state_doc` is optional so the native loop, which does
     not maintain structured state, keeps its existing behavior unchanged.
 
@@ -511,7 +511,7 @@ def build_context_block(
     nodes = graph.get("nodes", [])
 
     if not context and not nodes and not state_lines:
-        # Turn 1 — nothing to carry forward.
+        # Turn 1: nothing to carry forward.
         return f"force_risk_report: {str(force_risk_report).lower()}\n"
 
     lines: list[str] = []
@@ -573,7 +573,7 @@ def build_followup_prefetch(
 ) -> str:
     """ONE bounded, retrieval-shaped slice for a follow-up whose keywords match a
     known bucket. Returns "" when nothing matches or there's no state. Pure and
-    deterministic — reads only `state_doc`, spends no credits, makes no LLM call.
+    deterministic: reads only `state_doc`, spends no credits, makes no LLM call.
     Designed to fire only for `conversational_followup` (the caller gates it)."""
     if not state_doc or not user_message:
         return ""
@@ -668,10 +668,10 @@ def graph_payload(tool_name: str, parsed: dict[str, Any]) -> tuple[list, list]:
     search_entity returns up to 10 fuzzy name matches that include noise
     (e.g. "Sergey Lazo street" matching "Sergey Roldugin"). We send them to
     the model in the tool_result so it can pick, but we do NOT add them to the
-    graph — the graph should only show entities the agent decided to traverse.
+    graph: the graph should only show entities the agent decided to traverse.
     sayari_resolve is the Sayari analogue: it returns ranked candidates the
     agent must pick from, so its results stay off the canvas too.
-    recall_state / recall_memory are pure reads over stored memory — they must
+    recall_state / recall_memory are pure reads over stored memory; they must
     NEVER add nodes.
     """
     if tool_name in ("search_entity", "sayari_resolve", "recall_state", "recall_memory"):
@@ -700,7 +700,7 @@ _MODEL_PROP_KEYS = frozenset({
 })
 
 
-# UI-only payload keys the MODEL never reasons over — they ride along in the
+# UI-only payload keys the MODEL never reasons over; they ride along in the
 # tool result purely so the frontend can render an overlay/map, and the live SSE
 # events carry them to the UI separately. Stripping them from the model copy
 # removes pure duplication (each is a re-encoding of data already in `nodes` /
@@ -716,7 +716,7 @@ def slim_result_for_model(parsed: dict[str, Any]) -> dict[str, Any]:
     """Compact copy of a tool result for the model's message history.
 
     Tool results are re-sent on every agent iteration, so a long investigation
-    pays for early results many times over — that quadratic token growth is what
+    pays for early results many times over, and that quadratic token growth is what
     trips Anthropic's per-minute input-token rate limit. We keep node identity
     (id/name/label/source) plus a few reasoning-relevant properties and drop the
     rest, and we strip UI-only duplicative blobs (`all_lead_nodes`,
@@ -751,8 +751,8 @@ def slim_result_for_model(parsed: dict[str, Any]) -> dict[str, Any]:
         slim_nodes.append(node)
     out = dict(parsed)
     out["nodes"] = slim_nodes
-    # Drop UI-only top-level blobs (shallow-copy `out` so `parsed` — read by the
-    # SSE event emitters — is untouched).
+    # Drop UI-only top-level blobs (shallow-copy `out` so `parsed`, read by the
+    # SSE event emitters, is untouched).
     for k in _MODEL_DROP_TOPLEVEL:
         out.pop(k, None)
     # Trim UI-only metadata keys without mutating the shared metadata dict
@@ -844,7 +844,7 @@ def build_sanctions_review(
     """Compare raw strong watchlist hits to what the agent kept in the terminator.
 
     Works for BOTH terminator shapes: a RiskSummary (investigation turn) or a
-    TurnAnswer (answer turn) — both carry a `sanctions_hits` list of the hits the
+    TurnAnswer (answer turn): both carry a `sanctions_hits` list of the hits the
     agent confirmed. Everything else in `raw_strong_hits` is, by construction, a
     strong match the agent dismissed (a name collision). Returns the review
     payload, or None when there were no strong hits to adjudicate (in which case

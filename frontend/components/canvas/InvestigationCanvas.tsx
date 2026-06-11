@@ -5,7 +5,7 @@
  *
  * Replaces the stage-1 stacked list with a React Flow canvas hosting
  * TurnCards as nodes. Donor: local-lmcanvas Canvas.tsx (MIT License,
- * Copyright (c) 2026 Max Lee) — pan/zoom configuration, 32px line grid,
+ * Copyright (c) 2026 Max Lee): pan/zoom configuration, 32px line grid,
  * local-rfNodes drag pattern (intermediate drag positions never hit the
  * store), drag-aware edge handle recomputation, and the draft-child fork
  * flow from useBranchFromNode. Adapted to a server-backed turn tree: node
@@ -73,7 +73,7 @@ const EXAMPLES = ["Gazprom", "Sberbank", "Sergey Roldugin", "Huawei Technologies
 const DRAFT_ID = "__draft__";
 
 /**
- * Composer autocomplete templates — the investigative taxonomy, parameterized
+ * Composer autocomplete templates: the investigative taxonomy, parameterized
  * on known entities. Instantiated with the top corpus entities and filtered by
  * a case-insensitive substring match on the typed text. Client-side only.
  */
@@ -167,7 +167,7 @@ function InvestigationCanvasInner({
   const isTimeTraveling =
     state.activeTurnId !== null && state.activeTurnId !== liveHeadId;
 
-  // The ACTIVE PATH (root -> selected) — used to emphasize its edges.
+  // The ACTIVE PATH (root -> selected), used to emphasize its edges.
   const activePathCanvasIds = useMemo(() => {
     if (!effectiveSelectedId) return new Set<string>();
     return new Set(pathToRoot(state, effectiveSelectedId).map(canvasIdOf));
@@ -591,7 +591,7 @@ function InvestigationCanvasInner({
     : null;
 
   // The new-branch (+) button forks from the selected turn, falling back to
-  // the live head — the same draft-card flow as the hover-fork on cards.
+  // the live head, the same draft-card flow as the hover-fork on cards.
   const branchTarget = (selectedTurn ?? liveHead) || null;
   const canBranch =
     !disabled && !draft && Boolean(branchTarget?.turnId) &&
@@ -692,7 +692,7 @@ function InvestigationCanvasInner({
         </div>
       )}
 
-      {/* Composer — submits onto the active path head */}
+      {/* Composer: submits onto the active path head */}
       <div className="relative border-t border-border bg-background p-3">
         {/* Autocomplete panel: entities + instantiated question templates,
             floating above the input. Esc hides; ↑/↓ + Enter navigate/fill. */}

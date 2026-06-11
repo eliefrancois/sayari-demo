@@ -77,7 +77,7 @@ def screen_hs_codes(codes: list[Any]) -> list[dict[str, Any]]:
 
 # Sayari NATIVE party-risk tag fragments that signal export-control / dual-use
 # exposure. These come straight off a trade party's `risks` dict (NOT our HS
-# screen) — surfaced with provenance "sayari_bis_tag" so the two never blur.
+# screen), surfaced with provenance "sayari_bis_tag" so the two never blur.
 _NATIVE_DUAL_USE_FRAGMENTS = (
     "bis_high_priority",      # exports_bis_high_priority_items_*
     "usa_bis",                # export_controls_bis_entity, owner_of_usa_bis_entity
@@ -92,8 +92,8 @@ _NATIVE_DUAL_USE_FRAGMENTS = (
 def native_bis_tags(risks: Any) -> list[str]:
     """The export-control / dual-use risk-factor NAMES on a Sayari trade party's
     `risks` dict (e.g. `exports_bis_high_priority_items_*`, `owner_of_usa_bis_entity`,
-    `controlled_by_bis_meu`). These are Sayari's OWN tags — provenance
-    'sayari_bis_tag' — complementing our HS screen. Returns [] when the party
+    `controlled_by_bis_meu`). These are Sayari's OWN tags, provenance
+    'sayari_bis_tag', complementing our HS screen. Returns [] when the party
     carries no such tag."""
     if not isinstance(risks, dict):
         return []

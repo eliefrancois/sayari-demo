@@ -23,7 +23,7 @@ import { downloadRiskReportPdf } from "@/lib/report-pdf";
 import { Markdown } from "@/components/ui/markdown";
 import { cn } from "@/lib/utils";
 
-/* Confidence is grayscale — color is reserved for risk severity and source
+/* Confidence is grayscale. Color is reserved for risk severity and source
  * provenance (spec §2). Intensity encodes the band instead. */
 const CONFIDENCE_STYLE = {
   high: "text-foreground border-foreground/40 bg-muted",
@@ -88,7 +88,7 @@ export function RiskSummaryCard({
       style={{ transformOrigin: "top center" }}
       className="relative rounded-[10px] border border-foreground/25 bg-card px-5 pb-4 pt-10 text-sm shadow-sm"
     >
-      {/* Corner badge row — inverted badge marks the formal report */}
+      {/* Corner badge row: inverted badge marks the formal report */}
       <div className="absolute left-4 right-4 top-3 flex min-w-0 items-center gap-2">
         <span className="rounded-md bg-foreground px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.16em] text-background">
           risk summary
@@ -332,7 +332,7 @@ function SummaryClaimRow({
   const allNodeIds = claim.source_refs
     .map((r) => r.node_id)
     .filter((id): id is string => !!id);
-  // Only ids actually on the evidence graph count — a claim whose refs all
+  // Only ids actually on the evidence graph count. A claim whose refs all
   // point at off-graph ICIJ nodes would otherwise advertise a click that
   // highlights nothing.
   const nodeIds = nodesById
@@ -407,7 +407,7 @@ function SummaryClaimRow({
 
 /**
  * Sayari risk factors grouped by severity level (critical > high > elevated >
- * relevant). Each factor with a traversal path is clickable — clicking
+ * relevant). Each factor with a traversal path is clickable: clicking
  * highlights that ownership/control chain on the graph (the "show your work"
  * moment). psa_* factors are tagged as ER-derived / lower confidence.
  */

@@ -28,7 +28,7 @@ _TTL_SECONDS = 60 * 60  # 1h
 
 def _client() -> httpx.AsyncClient:
     """One-shot client. We don't hold a long-lived pool because Upstash REST
-    is HTTP/1.1 and the calls are tiny — connection overhead is dwarfed by
+    is HTTP/1.1 and the calls are tiny, so connection overhead is dwarfed by
     network latency."""
     s = get_settings()
     return httpx.AsyncClient(

@@ -15,18 +15,18 @@ Open `http://localhost:3000`. Point `NEXT_PUBLIC_BACKEND_URL` at your local back
 
 ## Key directories
 
-- `app/` — App Router entry (`page.tsx`, `layout.tsx`, global styles).
-- `components/canvas/` — the React Flow investigation canvas: turn nodes, tool-call blocks, group overlays.
-- `components/` — the cards and panels: answer card, risk summary, entity detail, evidence graph, trade-routes map.
-- `components/manager/` — the conversation history menu (list, search, delete).
-- `components/ui/` — shadcn and prompt-kit primitives.
-- `lib/` — the non-UI logic: `sse-client.ts` (SSE consumption), `conversation-store.ts` (state), `canvas-layout.ts` and `groupClustering.ts` (graph layout and subject grouping), `report-pdf.ts` (PDF export), `types.ts`.
+- `app/`: App Router entry (`page.tsx`, `layout.tsx`, global styles).
+- `components/canvas/`: the React Flow investigation canvas, turn nodes, tool-call blocks, group overlays.
+- `components/`: the cards and panels, answer card, risk summary, entity detail, evidence graph, trade-routes map.
+- `components/manager/`: the conversation history menu (list, search, delete).
+- `components/ui/`: shadcn and prompt-kit primitives.
+- `lib/`: the non-UI logic. `sse-client.ts` (SSE consumption), `conversation-store.ts` (state), `canvas-layout.ts` and `groupClustering.ts` (graph layout and subject grouping), `report-pdf.ts` (PDF export), `types.ts`.
 
 ## Env vars
 
 See `.env.local.example`. Only one:
 
-- `NEXT_PUBLIC_BACKEND_URL` — the backend base URL.
+- `NEXT_PUBLIC_BACKEND_URL`: the backend base URL.
 
 ## Deploy to Vercel
 

@@ -29,7 +29,7 @@ type ConversationManagerProps = {
   open: boolean;
   onClose: () => void;
   activeConversationId: string | null;
-  /** True while a turn is streaming — switching/deleting is blocked. */
+  /** True while a turn is streaming: switching/deleting is blocked. */
   isRunning: boolean;
   onSelect: (conversationId: string) => void;
   onNewInvestigation: () => void;

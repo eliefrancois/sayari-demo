@@ -128,7 +128,7 @@ function buildEdges(edges: ERGraphEdge[]): Edge[] {
     const stroke = dualUse ? DUAL_USE_COLOR : EDGE_COLOR;
     return {
       id: `e-${i}-${e.source}-${e.target}-${e.type}`,
-      // ER edge identity, matching the store's edgeKey — lets the time-travel
+      // ER edge identity, matching the store's edgeKey: lets the time-travel
       // overlay dim inherited edges without re-deriving type from the id.
       data: { erKey: `${e.source}::${e.type}::${e.target}` },
       source: e.source,
@@ -169,7 +169,7 @@ type SimLink = SimulationLinkDatum<SimNode>;
 const NODE_HALF_W = 70;
 const NODE_HALF_H = 18;
 
-/** Deterministic 32-bit hash (FNV-1a) of a string — seeds reproducible jitter. */
+/** Deterministic 32-bit hash (FNV-1a) of a string, seeds reproducible jitter. */
 function hashStr(s: string): number {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
@@ -277,13 +277,13 @@ export interface GraphPanelProps {
    * still re-zooms.
    */
   focusRequest?: { nodeId: string; tick: number } | null;
-  /** Node labels toggled off in the legend — hidden from layout and render. */
+  /** Node labels toggled off in the legend: hidden from layout and render. */
   hiddenLabels?: Set<NodeLabel>;
   /** User chose an expand kind from the right-click menu. */
   onExpandNode?: (nodeId: string, kind: ExpandKind) => void;
   /** User chose "pin/unpin to context" from the right-click menu. */
   onTogglePin?: (nodeId: string) => void;
-  /** User chose "Open detail view" — opens the right-hand EntityDetailPanel. */
+  /** User chose "Open detail view": opens the right-hand EntityDetailPanel. */
   onOpenDetail?: (nodeId: string) => void;
   /**
    * Lead counts from the latest broad search: how many leads are pinned to the
@@ -335,7 +335,7 @@ export function GraphPanel(props: GraphPanelProps) {
  * Why d3-force instead of a hierarchical (dagre) layout: investigation graphs
  * are messy and multi-rooted (officers cross-link to entities cross-link to
  * addresses cross-link to other entities via shared addresses). A force
- * simulation makes the structure legible — strongly-connected clusters
+ * simulation makes the structure legible: strongly-connected clusters
  * physically clump, shared-address shell patterns become visible, and the
  * "alive" motion during agent runs matches the dynamic investigation feel.
  * This is the same layout style Sayari Graph and other RegTech tools use.
@@ -347,7 +347,7 @@ export function GraphPanel(props: GraphPanelProps) {
  *      `rfNodes` (React Flow's render state).
  *   4. User drags pin a node via `fx`/`fy` so the sim stops moving it.
  *   5. The subject (first node) is anchored at (0,0) so the rest of the
- *      graph orbits around a stable focal point — otherwise the whole
+ *      graph orbits around a stable focal point. Otherwise the whole
  *      cluster drifts every time new neighbors arrive.
  */
 function GraphPanelInner({
@@ -378,7 +378,7 @@ function GraphPanelInner({
     leadsShown > 0;
 
   // The unpinned leads to overlay (when toggled on), minus any that already
-  // exist as persistent nodes — those are real graph members, not overlay.
+  // exist as persistent nodes (those are real graph members, not overlay).
   const overlayNodes = useMemo(() => {
     if (!showOverlayLeads || !overlayLeadNodes?.length) return [] as ERGraphNode[];
     const baseIds = new Set(nodes.map((n) => n.id));
@@ -457,7 +457,7 @@ function GraphPanelInner({
       // Deps changed identity without the dataset changing (the parent
       // rebuilds the node/edge arrays on every render, which during SSE
       // streaming means every token). The cleanup below already stopped the
-      // still-relevant sim — resume it instead of leaving the layout frozen.
+      // still-relevant sim, so resume it instead of leaving the layout frozen.
       simRef.current?.restart();
       return;
     }
@@ -537,7 +537,7 @@ function GraphPanelInner({
           .distance(160)
           .strength(0.55)
       )
-      // Pull toward origin. Weak — the subject anchors / origin pin do most
+      // Pull toward origin. Weak, since the subject anchors / origin pin do most
       // of the centering work.
       .force("center", forceCenter(0, 0).strength(0.05))
       // Stop nodes from overlapping. Radius is a touch bigger than the
@@ -677,7 +677,7 @@ function GraphPanelInner({
 
   // Apply highlight (traversal path / claim hover), pinned-context cues, and
   // the time-travel scope as style overlays. Highlight is a neutral
-  // foreground glow — color stays reserved for risk + source — and wins over
+  // foreground glow (color stays reserved for risk + source) and wins over
   // pinned when both apply. Time-travel: this turn's own delta pulses in,
   // inherited (ancestor-path) evidence dims (spec §6).
   const styledNodes = useMemo(() => {
@@ -759,7 +759,7 @@ function GraphPanelInner({
   }, [visibleNodes]);
 
   // Primary subjects: entity ids that exist as nodes on the canvas (investigation
-  // roots). Hulls are drawn only for these — not for stray ids or shared hops.
+  // roots). Hulls are drawn only for these, not for stray ids or shared hops.
   const primarySubjectIds = useMemo(() => {
     const ids = new Set<string>();
     for (const n of visibleNodes) {

@@ -19,7 +19,7 @@ log = logging.getLogger("erre.intent")
 
 # The minimal corroboration set. The system prompt MANDATES a cross-source step
 # (Process step 4): check_sanctions for DIRECT watchlist listing, search_entity
-# for ICIJ leak provenance. These must be bindable on EVERY narrowed turn —
+# for ICIJ leak provenance. These must be bindable on EVERY narrowed turn,
 # otherwise a confident classification strands the agent Sayari-only and it
 # literally cannot execute the corroboration its own prompt orders (it only
 # worked when confidence dipped below the floor and the full set was bound).
@@ -33,7 +33,7 @@ _CORROBORATION_TOOLS = ["check_sanctions", "search_entity"]
 # sayari_record, the agent physically cannot fetch the record its own prompt
 # tells it to (the same stranding bug as the corroboration set). So sayari_record
 # is unioned into every intent that resolves+profiles a subject (below). Lead-gen
-# (broad_search) and the meta intents are excluded — the former has no profiled
+# (broad_search) and the meta intents are excluded: the former has no profiled
 # subject yet, the latter already bind the full toolset.
 _RECORD_PROVENANCE_TOOLS = ["sayari_record"]
 _RECORD_CAPABLE_INTENTS = {
@@ -46,7 +46,7 @@ _RECORD_CAPABLE_INTENTS = {
 
 # The bounded intent taxonomy. Each maps to the INVESTIGATION tools worth binding
 # for that turn (terminators are added separately and always available). The two
-# "meta" intents (conversational_followup, out_of_scope) bind the full toolset —
+# "meta" intents (conversational_followup, out_of_scope) bind the full toolset:
 # a follow-up can ask anything and reuses prior context, and out_of_scope is
 # safest with everything available plus strong "clarify/decline" guidance.
 _INTENT_TOOLS: dict[str, list[str]] = {
@@ -117,7 +117,7 @@ for _intent in _RECORD_CAPABLE_INTENTS:
 
 _INTENTS = list(_INTENT_TOOLS.keys())
 
-# Below this confidence we don't trust the label enough to narrow tools — fall
+# Below this confidence we don't trust the label enough to narrow tools, so fall
 # back to the full toolset (but still inject the guidance as a hint).
 _CONFIDENCE_FLOOR = 0.55
 
@@ -294,7 +294,7 @@ def _is_recap(msg: str) -> bool:
 def _recap_shortcut(msg: str, prior_context: str) -> dict[str, Any] | None:
     """Route a recap to conversational_followup with wants_report=false and a
     recap flag (drives the recap guidance overlay). Only fires mid-conversation
-    (prior_context present) — on turn 1 there is nothing to recap, so the phrase
+    (prior_context present): on turn 1 there is nothing to recap, so the phrase
     is treated as a normal turn and classified by the model."""
     if prior_context.strip() and _is_recap(msg):
         return {
@@ -308,7 +308,7 @@ def _recap_shortcut(msg: str, prior_context: str) -> dict[str, Any] | None:
 
 
 def _greeting_shortcut(msg: str) -> dict[str, Any] | None:
-    """Rule-based shortcut for trivially-conversational turns — skips the LLM
+    """Rule-based shortcut for trivially-conversational turns; skips the LLM
     call entirely (zero latency/credits) for greetings and thanks."""
     m = msg.strip().lower().rstrip("!.?")
     if len(m) <= 2 or m in {

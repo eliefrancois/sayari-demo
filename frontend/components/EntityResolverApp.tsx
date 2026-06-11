@@ -48,7 +48,7 @@ const CONVERSATION_KEY = "err:conversation_id";
 /**
  * localStorage key for the canvas/graph split ratio. Persistence is applied
  * imperatively after mount (panel ref resize) rather than via useDefaultLayout
- * so server and first client render agree — reading localStorage during render
+ * so server and first client render agree. Reading localStorage during render
  * would cause a hydration mismatch.
  */
 const PANEL_LAYOUT_KEY = "err:panel-split";
@@ -89,7 +89,7 @@ export function EntityResolverApp() {
   const [centerView, setCenterView] = useState<CenterView>("graph");
   const [scoped, setScoped] = useState<ScopedGraph | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
-  // Entity clicked in answer/summary markdown — drives the right-hand detail
+  // Entity clicked in answer/summary markdown, drives the right-hand detail
   // slide-over (item: clickable entities). Null = closed.
   const [detailEntity, setDetailEntity] = useState<EntityMatch | null>(null);
   // Bumped when the workspace is replaced wholesale (switch / new / delete) so
@@ -101,7 +101,7 @@ export function EntityResolverApp() {
   // Canvas/graph split ratio, persisted to localStorage across reloads.
   // Applied after mount (hydration-safe), saved on every drag. The Group
   // fires onLayoutChanged with the DEFAULT split during mount, before the
-  // restore effect below runs — persisting that first call would clobber the
+  // restore effect below runs, persisting that first call would clobber the
   // saved ratio with 40/60 on every reload, so writes are gated until the
   // restore has happened.
   const investigationPanelRef = usePanelRef();
@@ -144,7 +144,7 @@ export function EntityResolverApp() {
         dispatch({ type: "hydrate", payload });
       })
       .catch(() => {
-        // Expired (24h TTL) or unreachable — forget it.
+        // Expired (24h TTL) or unreachable, so forget it.
         localStorage.removeItem(CONVERSATION_KEY);
       });
     return () => {
@@ -184,7 +184,7 @@ export function EntityResolverApp() {
       handleRef.current = null;
 
       // Optimistic render: the user's turn card appears the instant they hit
-      // send — BEFORE createConversation / POST /messages (several serial
+      // send, BEFORE createConversation / POST /messages (several serial
       // Upstash round-trips server-side). The provisional turn carries a
       // stable clientId; the canvas keys its position on that id, so when
       // the server identity arrives via turn_resolved nothing jumps.
@@ -285,7 +285,7 @@ export function EntityResolverApp() {
 
   // Switching reuses the EXACT page-reload restore path (fetchConversation ->
   // hydrate), so turns, the tree canvas, the merged graph and the map data all
-  // come back identically. Blocked while a turn is streaming — the manager
+  // come back identically. Blocked while a turn is streaming: the manager
   // disables its rows, and this guard backs that up.
   const switchConversation = useCallback(
     (cid: string) => {
@@ -304,7 +304,7 @@ export function EntityResolverApp() {
           dispatch({ type: "hydrate", payload });
         })
         .catch((err) => {
-          // Expired (24h TTL) or unreachable — leave the current state alone.
+          // Expired (24h TTL) or unreachable, so leave the current state alone.
           console.error("switch conversation failed", err);
         });
     },
@@ -367,7 +367,7 @@ export function EntityResolverApp() {
     return () => {
       cancelled = true;
     };
-    // `state` is intentionally not a dep — the scope refetches only when the
+    // `state` is intentionally not a dep: the scope refetches only when the
     // selected turn changes, not on every streaming tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeTravelTurnId, state.conversationId]);
@@ -538,7 +538,7 @@ export function EntityResolverApp() {
           onLayoutChanged={persistLayout}
           className="min-h-0 flex-1"
         >
-          {/* Left: INVESTIGATION — the branching turn canvas */}
+          {/* Left: INVESTIGATION, the branching turn canvas */}
           <Panel
             id="investigation"
             panelRef={investigationPanelRef}
@@ -569,7 +569,7 @@ export function EntityResolverApp() {
             className="w-px bg-border outline-none transition-colors data-[separator=active]:bg-foreground/50 data-[separator=focus]:bg-foreground/30 data-[separator=hover]:bg-foreground/30"
           />
 
-          {/* Right: EVIDENCE GRAPH — graph with a map lens for trade routes */}
+          {/* Right: EVIDENCE GRAPH, graph with a map lens for trade routes */}
           <Panel
             id="evidence"
             minSize="30%"
@@ -616,7 +616,7 @@ export function EntityResolverApp() {
                   <div className="absolute inset-0 z-10">
                     <TradeRoutesMap routes={tradeRoutes} subjects={tradeSubjects} />
                     {/* Path-scoping the map isn't cheap (routes derive from
-                        per-turn tool metadata) — the map stays on live-head data
+                        per-turn tool metadata), the map stays on live-head data
                         and says so while time-traveling. */}
                     {scoped && (
                       <div className="pointer-events-none absolute left-3 top-3 z-20 rounded-md border border-border bg-card px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground shadow-sm">

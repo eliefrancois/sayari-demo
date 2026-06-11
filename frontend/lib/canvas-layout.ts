@@ -102,7 +102,7 @@ function offsetRect(base: Rect, d: Pos): Rect {
 /**
  * When a node is inserted, any node whose box overlaps it on the same
  * horizontal lane is pushed right. Pushed nodes cascade further pushes, but
- * only rightward — never back leftward — to avoid ping-pong.
+ * only rightward, never back leftward, to avoid ping-pong.
  *
  * Returns { nodeId -> new absolute position } for every node that must move.
  */
@@ -168,7 +168,7 @@ export function resolveCollisions(
       const currentBox = offsetRect(baseBox, current);
 
       if (!verticalOverlap(source.box, currentBox)) continue;
-      // Rightward-only push (donor invariant — prevents ping-pong).
+      // Rightward-only push (donor invariant that prevents ping-pong).
       if (currentBox.x < source.box.x) continue;
       if (!horizontalOverlap(source.box, currentBox)) continue;
 
@@ -231,7 +231,7 @@ export function layoutNewTurns(
   const byTurnId = new Map<string, Turn>();
   for (const t of turns) if (t.turnId) byTurnId.set(t.turnId, t);
 
-  // Children placed so far, per parent canvas id — drives fork detection.
+  // Children placed so far, per parent canvas id. Drives fork detection.
   const childCount = new Map<string, number>();
   const bumpChildren = (parentCanvasId: string) =>
     childCount.set(parentCanvasId, (childCount.get(parentCanvasId) ?? 0) + 1);

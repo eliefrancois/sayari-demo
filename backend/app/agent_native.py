@@ -76,7 +76,7 @@ async def _emit(session_id: str, type_: str, **data: Any) -> None:
 
 async def run_investigation(session_id: str, user_query: str) -> None:
     """Run the agent loop for one investigation. All output goes via SSE events
-    written to Upstash. This function never returns anything meaningful — its
+    written to Upstash. This function never returns anything meaningful; its
     side effect is the event stream and the final session state."""
     await sessions.set_state(session_id, "running")
     await _emit(session_id, "agent_started", input=user_query)
@@ -87,7 +87,7 @@ async def run_investigation(session_id: str, user_query: str) -> None:
     # cache_last_tool adds an ephemeral cache breakpoint on the last tool so the
     # whole (stable) tool-definitions block is cached across iterations.
     all_tools = cache_last_tool(TOOLS + [SUBMIT_SUMMARY_TOOL])
-    # System prompt as a cached block (breakpoint at its end) — cached alongside
+    # System prompt as a cached block (breakpoint at its end), cached alongside
     # the tools so the large, stable prefix isn't re-billed every iteration.
     system_blocks = cached_system(SYSTEM_PROMPT)
 
@@ -125,7 +125,7 @@ async def run_investigation(session_id: str, user_query: str) -> None:
                     stop_reason=resp.stop_reason,
                 )
 
-            # Append the assistant turn verbatim — Claude's tool_use blocks must
+            # Append the assistant turn verbatim: Claude's tool_use blocks must
             # be preserved exactly when we send tool_results back.
             messages.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
 
@@ -307,7 +307,7 @@ async def _emit_sanctions_review(
 # run_turn is the conversation-aware sibling of run_investigation. The agent
 # loop is identical in SHAPE; the differences are:
 #   - two terminators (submit_summary for investigations, submit_answer for
-#     clarifications / follow-ups) — the agent picks based on the turn type,
+#     clarifications / follow-ups), the agent picks based on the turn type,
 #   - a compressed CONVERSATION CONTEXT block prepended to the user message so
 #     follow-ups build on prior turns without replaying every raw tool_result,
 #   - graph nodes/edges accumulate into the conversation's stored graph,
@@ -539,7 +539,7 @@ async def run_turn(
                     })
 
             # When the model made tool calls, any text it produced is reasoning
-            # narration — surface it in the reasoning timeline.
+            # narration, surface it in the reasoning timeline.
             if had_tool_use:
                 for t in current_text_parts:
                     await _emit_conv(conversation_id, turn_index, "agent_thought", text=t)

@@ -28,7 +28,7 @@ RiskSignal = Literal[
 # --- Source provenance tag (for the graph legend + cross-source story) ---
 # Which data system a node/edge/claim came from. ICIJ leak provenance,
 # OpenSanctions watchlists, and Sayari (registries + risk + trade) are
-# independent sources — tagging lets the UI color them and lets the agent
+# independent sources, so tagging lets the UI color them and lets the agent
 # make the "corroborated across independent sources" claim honestly.
 SourceSystem = Literal["icij", "sanctions", "sayari"]
 
@@ -97,7 +97,7 @@ class SanctionsHit(BaseModel):
     # BOTH a high score AND on_watchlist=True.
     on_watchlist: bool = False
     # Disambiguation fields. Optional because OpenSanctions records vary in
-    # completeness — some have rich PEP data, others are bare-name watchlists.
+    # completeness: some have rich PEP data, others are bare-name watchlists.
     position: list[str] | None = None  # e.g. ["PHYSICIAN (MD, DO)"]
     address: list[str] | None = None
     countries: list[str] | None = None  # ISO codes, e.g. ["us", "ru"]
@@ -109,7 +109,7 @@ class SayariCandidate(BaseModel):
 
     Resolution returns CANDIDATES, not an answer: `score` ranks relevance
     (descending) but the top score is not always the canonical entity (the
-    Sberbank case — the top hit was a subsidiary). The agent disambiguates
+    Sberbank case, where the top hit was a subsidiary). The agent disambiguates
     using score + match_strength + address + identifiers, exactly like the
     Jeffrey-Lipman discipline on the ICIJ side. Never auto-merge into ICIJ on
     name alone.
@@ -129,8 +129,8 @@ class SayariCandidate(BaseModel):
 class SayariSearchCandidate(BaseModel):
     """One lead from Sayari Entity Search (broad/fuzzy investigative search).
 
-    Distinct from SayariCandidate (precise resolution): Entity Search is lead-gen
-    — it casts a wide net to surface entities worth a closer look, NOT a ranked
+    Distinct from SayariCandidate (precise resolution): Entity Search is lead-gen,
+    it casts a wide net to surface entities worth a closer look, NOT a ranked
     answer to "which entity is this?". We keep each lead deliberately slim (id,
     label, type, country, flags, top risk-factor names) so a broad query doesn't
     flood the model or the canvas. The agent triages these, then resolves/profiles
@@ -143,7 +143,7 @@ class SayariSearchCandidate(BaseModel):
     countries: list[str] = Field(default_factory=list)  # ISO trigrams
     sanctioned: bool | None = None
     pep: bool | None = None
-    # The most severe risk-factor NAMES on the lead (not the full factor map) —
+    # The most severe risk-factor NAMES on the lead (not the full factor map),
     # just enough to tell a risky lead from a benign one at triage time.
     top_risk: list[str] = Field(default_factory=list)
 
@@ -253,7 +253,7 @@ class SayariShortestPathHop(BaseModel):
 
 
 class SayariShortestPath(BaseModel):
-    """A Sayari shortest-path between two entities — the "hidden chain" between a
+    """A Sayari shortest-path between two entities, the "hidden chain" between a
     clean subject and a sanctioned/risky target. `has_sanctioned_intermediary`
     flags when any INTERMEDIATE hop (not just the endpoints) is sanctioned, which
     is the headline supply-chain risk signal: a clean-looking counterparty linked
@@ -274,7 +274,7 @@ class SayariRiskFactor(BaseModel):
     `value` is the raw factor value: True for direct/categorical factors,
     a number equal to the hops in the ownership chain for derived factors, or
     an index score. `path` holds the `metadata.traversal_path` strings
-    (`srcId|rel|tgtId|rel|tgtId`) — the exact ownership/control chain that
+    (`srcId|rel|tgtId|rel|tgtId`), the exact ownership/control chain that
     triggered the factor, which becomes a highlightable chain on the graph.
     `psa` flags ER-derived (`psa_*`) factors as lower-confidence.
     """
@@ -338,14 +338,14 @@ class TurnAnswer(BaseModel):
     source_refs; pure explanation can live in `answer`.
     """
 
-    answer: str  # markdown narrative — the main response
+    answer: str  # markdown narrative, the main response
     claims: list[Claim] = Field(default_factory=list)
     referenced_node_ids: list[str] = Field(default_factory=list)
     clarification_questions: list[str] = Field(default_factory=list)
     offer_risk_report: bool = False
     risk_report_prompt: str | None = None
     # Guarded affordance flag: the agent sets this true when the turn has gathered
-    # enough for a formal memo — a resolved entity PLUS >=1 risk/ownership/sanctions
+    # enough for a formal memo: a resolved entity PLUS >=1 risk/ownership/sanctions
     # signal. The frontend uses it to surface a "generate risk report" button
     # (Tier 3). It does NOT auto-emit the report; the user must ask. Keeping the
     # default conversational answer + this flag is the whole point of the
@@ -376,7 +376,7 @@ class GraphNode(BaseModel):
     # Subject-membership provenance for group-aware layout + hull regions: the
     # resolved subject entity id(s) this node was attributed to. A node shared by
     # two subjects (e.g. a shortest-path intermediary) carries both ids and lands
-    # in the overlap. Additive/optional — old stored graphs default to empty.
+    # in the overlap. Additive/optional; old stored graphs default to empty.
     subject_ids: list[str] = Field(default_factory=list)
     # The turn_id that first introduced this node (for new-this-turn pulse /
     # provenance). None on legacy nodes and in non-persisted eval mode.

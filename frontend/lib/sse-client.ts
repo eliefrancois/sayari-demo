@@ -115,7 +115,7 @@ export async function sendMessage(
     pinned_node_ids: opts.pinnedNodeIds ?? [],
     force_risk_report: opts.forceRiskReport ?? false,
   };
-  // Only ship the field when forking — omitting it keeps the old linear
+  // Only ship the field when forking. Omitting it keeps the old linear
   // contract byte-identical (and stays safe against older backends).
   if (opts.parentTurnId) body.parent_turn_id = opts.parentTurnId;
   const resp = await fetch(`${BACKEND_URL}/conversations/${conversationId}/messages`, {
@@ -180,8 +180,8 @@ export function streamTurn(
   let closed = false;
 
   // Idempotency across reconnects. The backend replays the event list from the
-  // original `cursor` on EVERY (re)connection — and the browser's EventSource
-  // silently auto-reconnects on transient drops — so without guarding we'd
+  // original `cursor` on EVERY (re)connection, and the browser's EventSource
+  // silently auto-reconnects on transient drops, so without guarding we'd
   // re-apply already-seen events (duplicate tool calls, doubled token text,
   // repeated thoughts). The endpoint sets no SSE `id:`, so we can't lean on
   // Last-Event-ID; instead we dedupe by position. Each connection re-emits the
@@ -220,7 +220,7 @@ export function streamTurn(
       data = JSON.parse(raw);
     } catch {
       if (type === "error") {
-        // The error payload isn't guaranteed to be JSON — treat the raw string
+        // The error payload isn't guaranteed to be JSON, so treat the raw string
         // as the message rather than throwing/logging spuriously.
         data = { message: raw };
       } else {

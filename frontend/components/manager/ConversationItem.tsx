@@ -10,7 +10,7 @@ import type { ConversationListItem } from "@/lib/types";
  * One row in the history panel: title, relative updated-at, turn-count badge,
  * active-row highlight, and a hover-revealed "…" menu with Delete. Ported
  * from local-lmcanvas CanvasItem (see NOTICES.md) minus the Electron-specific
- * actions (threads, open-in-new-window, rename — titles here are server-derived).
+ * actions (threads, open-in-new-window, rename; titles here are server-derived).
  */
 
 type ConversationItemProps = {

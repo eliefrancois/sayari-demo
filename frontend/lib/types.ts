@@ -123,7 +123,7 @@ export interface SayariRiskFactor {
   value?: string | number | boolean | null;
   /** traversal_path strings: "srcId|rel|tgtId|rel|tgtId". */
   path: string[];
-  /** ER-derived (psa_*) — lower confidence. */
+  /** ER-derived (psa_*), lower confidence. */
   psa?: boolean;
 }
 
@@ -165,7 +165,7 @@ export interface RiskSummary {
 /**
  * Lightweight terminator for CLARIFY / FOLLOW-UP turns (mirrors backend
  * schema.TurnAnswer). Used instead of RiskSummary when the agent answers a
- * narrow question, asks for clarification, or chats — rather than producing a
+ * narrow question, asks for clarification, or chats, rather than producing a
  * full investigation memo.
  */
 export interface TurnAnswer {
@@ -263,7 +263,7 @@ export type EventType = StreamEvent["type"];
 /**
  * One turn's metadata in the conversation turn tree (GET /conversations/{id}/tree,
  * also under `tree` in the hydrate payload). Pre-branching conversations return
- * an empty list — fall back to the flat `turns`.
+ * an empty list, so fall back to the flat `turns`.
  */
 export interface TreeTurn {
   turn_id: string;
@@ -279,7 +279,7 @@ export interface TreeTurn {
 }
 
 /**
- * Response from GET /conversations/{id}/turns/{turn_id}/graph — the
+ * Response from GET /conversations/{id}/turns/{turn_id}/graph: the
  * time-travel payload. `graph` is accumulated along the root -> turn path
  * (sibling branches excluded); `turn_delta` is this turn's own contribution,
  * separated so the canvas can pulse new-this-turn nodes and dim inherited ones.
@@ -292,7 +292,7 @@ export interface TurnGraphResponse {
 }
 
 /**
- * One row from GET /conversations — the recents index behind the history
+ * One row from GET /conversations: the recents index behind the history
  * menu. `state` is the conversation's live state key ("idle" | "running" |
  * "error"); rows whose meta expired server-side never appear.
  */
@@ -309,7 +309,7 @@ export interface ConversationListItem {
  * One entry in the backend's unified id-keyed entity registry (the IMS Phase B
  * projection in conversations._project_entities). The hydrate payload ships it
  * under `state_doc.entities`; the frontend uses it for composer autocomplete
- * and the entity detail panel. All fields optional — the projection merges
+ * and the entity detail panel. All fields optional, since the projection merges
  * heterogeneous sources and older docs may carry sparser records.
  */
 export interface RegistryEntity {
@@ -335,7 +335,7 @@ export interface RegistryEntity {
   }[];
 }
 
-/** Payload from GET /conversations/{id} — used to restore on page reload. */
+/** Payload from GET /conversations/{id}, used to restore on page reload. */
 export interface ConversationHydrate {
   conversation_id: string;
   meta: { title?: string; created_at?: number; updated_at?: number; turn_count?: number };
@@ -355,7 +355,7 @@ export interface ConversationHydrate {
  * distinct accent so nodes/edges are visually attributable to their origin.
  *
  * Color semantics (locked in docs/04-tier3-ux-spec.md §2): the chrome is
- * neutral lmcanvas grayscale; color is reserved for exactly two signals —
+ * neutral lmcanvas grayscale; color is reserved for exactly two signals:
  * SOURCE (ring/dot): Sayari indigo, ICIJ magenta/violet, OpenSanctions teal,
  * and RISK severity (glow/fill): critical red, high orange, elevated amber,
  * relevant gray. Ring = source, glow = risk, so provenance is never lost.
@@ -398,7 +398,7 @@ export const sayariLevelRank = (level: string): number =>
 
 /**
  * Extract the entity ids from Sayari traversal_path strings. A path looks like
- * "srcId|rel|tgtId|rel|tgtId" — the even-indexed tokens are entity ids. Returns
+ * "srcId|rel|tgtId|rel|tgtId", where the even-indexed tokens are entity ids. Returns
  * the unique ids across all of a factor's paths, so the graph can highlight the
  * whole chain when the factor is clicked.
  */

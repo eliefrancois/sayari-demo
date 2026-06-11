@@ -14,11 +14,11 @@ and page reloads. Redis key layout:
   conversation:{id}:graph       -> JSON {nodes, edges} accumulated across turns
   conversation:{id}:state_doc   -> JSON structured investigation state (exact recall)
 
-Plus one global key — the recents index behind GET /conversations:
+Plus one global key, the recents index behind GET /conversations:
 
   conversations:index           -> ZSET member=conversation_id score=updated_at
 
-Branching (Stage 2a) keys — additive, same TTL discipline; a conversation that
+Branching (Stage 2a) keys: additive, same TTL discipline; a conversation that
 never forks (and every conversation created before these keys existed) behaves
 exactly as before because the tree keys are simply absent or form a single
 chain whose folded state is byte-identical to the merged doc:
@@ -79,7 +79,7 @@ def _k(conversation_id: str, suffix: str) -> str:
 
 # The conversation index: a ZSET of conversation_id scored by updated_at, so
 # "recent investigations" is one ZREVRANGE. Same 24h TTL discipline as every
-# other key — every touch refreshes it, so the index self-cleans alongside the
+# other key: every touch refreshes it, so the index self-cleans alongside the
 # conversations it points at. Members whose meta expired first are lazily
 # ZREM'd by list_conversations. Conversations created before the index existed
 # simply never appear (acceptable: this is a recents menu, not an archive).
@@ -146,7 +146,7 @@ async def set_state(conversation_id: str, state: str) -> None:
 
 
 async def acquire_lock(conversation_id: str) -> bool:
-    """SET key 1 NX EX 300 — returns True if we got the lock, False if held."""
+    """SET key 1 NX EX 300, returns True if we got the lock, False if held."""
     async with _client() as c:
         r = await c.post("/pipeline", json=[
             ["SET", _k(conversation_id, "lock"), "1", "NX", "EX", str(_LOCK_TTL_SECONDS)],
@@ -177,8 +177,8 @@ async def is_locked(conversation_id: str) -> bool:
 # The agent loop runs each turn inside `turn_scope(cid, turn_id, parent_turn_id)`.
 # While the scope is active, every state read in this task tree (`get_state_doc`,
 # and through it recall_state / the context assembly / the entity lookups) sees
-# the PATH-SCOPED state document — the fold of `_apply_delta` over the deltas
-# along root -> parent -> this turn — never sibling-branch deltas. Every
+# the PATH-SCOPED state document: the fold of `_apply_delta` over the deltas
+# along root -> parent -> this turn, never sibling-branch deltas. Every
 # `merge_state_doc` write is additionally recorded as a per-turn delta, and every
 # SSE event is stamped with the turn ids so the frontend can build the tree live.
 # A ContextVar (not a global) so concurrent turns of DIFFERENT conversations on
@@ -330,7 +330,7 @@ def _empty_state_doc() -> dict[str, Any]:
     `named_ids` (id -> {label, type, sanctioned, pep, countries}) caches names
     resolved for risk-path nodes this conversation, so a later turn naming the
     SAME multi-hop node reuses the cached label instead of re-spending a Sayari
-    entity_summary call — the bounded resolve compounds across turns.
+    entity_summary call; the bounded resolve compounds across turns.
 
     `entities` (Phase B, doc 09 §5) is the UNIFIED id-keyed registry: one
     id -> identity store that every tool deposits into and every consumer reads
@@ -340,8 +340,8 @@ def _empty_state_doc() -> dict[str, Any]:
     backfilled transparently (true backward-compat, no migration step). The KEY
     addition over the legacy buckets: strong check_sanctions hits become
     first-class registry entities (keyed by sanctions_id), not just ledger rows,
-    so the full connected-entity set — ownership neighbors, search leads, AND
-    sanctions hits — becomes one queryable, rankable pool.
+    so the full connected-entity set (ownership neighbors, search leads, AND
+    sanctions hits) becomes one queryable, rankable pool.
 
     `claims` (doc 09 §5) holds the structured claims the agent emitted in its
     typed terminator (text + confidence + source_refs + the entity_ids those
@@ -393,7 +393,7 @@ def _source_rank(src: str | None) -> int:
 
 
 def _is_sdn_label(label: Any) -> bool:
-    """True only for the OFAC SDN (Specially Designated Nationals) blocked list —
+    """True only for the OFAC SDN (Specially Designated Nationals) blocked list,
     the most severe OFAC posture. Explicitly NOT the OFAC Consolidated/non-SDN
     list (same name-collision discipline the prompt enforces): 'non-SDN' /
     'non sdn' / 'consolidated' never count as SDN."""
@@ -406,7 +406,7 @@ def _is_sdn_label(label: Any) -> bool:
 
 
 def _sanctions_regimes(lists: Any) -> list[str]:
-    """Distinct, normalized sanctions list/program labels on an entity — the
+    """Distinct, normalized sanctions list/program labels on an entity, the
     basis for the 'number of distinct regimes' tiebreak in severity ranking."""
     seen: dict[str, str] = {}
     for x in lists or []:
@@ -425,7 +425,7 @@ def entity_severity_score(e: dict[str, Any]) -> float:
       then by # of distinct regimes  -> broader listing ranks above a single one
       then PEP                       -> political exposure as a minor bump
 
-    No network, no LLM — purely the sanctions data already folded onto the
+    No network, no LLM, purely the sanctions data already folded onto the
     registry entity (`is_sdn`, `sanctioned`, `sanctions_lists`, `pep`)."""
     if not isinstance(e, dict):
         return 0.0
@@ -455,7 +455,7 @@ def _merge_countries(a: Any, b: Any) -> list[str]:
 
 def _upsert_entity(entities: dict[str, dict[str, Any]], eid: str, rec: dict[str, Any]) -> None:
     """Merge one deposit into the id-keyed registry (upsert, never blind
-    overwrite — doc 08 §3.2). Richer source wins the label/type; True wins for
+    overwrite, doc 08 §3.2). Richer source wins the label/type; True wins for
     the boolean flags; countries + sanctions_lists union; turn span widens."""
     if not eid or not isinstance(rec, dict):
         return
@@ -513,7 +513,7 @@ def _self_ref(eid: str, rec: dict[str, Any]) -> dict[str, Any]:
     named it (doc 09 §5 `source_refs`). A check_sanctions hit points back at its
     OpenSanctions record; an ICIJ-traversed node at its node_id; everything else
     (Sayari leads / resolved subjects / risk-path names) at its Sayari entity id.
-    Deterministic — read straight off the registry record, never prose."""
+    Deterministic: read straight off the registry record, never prose."""
     src = (rec.get("source") or "").strip().lower()
     if src == "check_sanctions" or rec.get("type") == "sanctions_entity":
         ref: dict[str, Any] = {"source": "opensanctions", "sanctions_id": eid}
@@ -554,7 +554,7 @@ def _attach_source_refs(
 
       1. a self-ref from the source that named the entity (`_self_ref`),
       2. the OpenSanctions record behind any sanctions-ledger row it maps to, and
-      3. the exact source_refs from any structured CLAIM that cited it — so the
+      3. the exact source_refs from any structured CLAIM that cited it, so the
          entity carries back the same ref the agent first used (e.g. a sayari
          risk_factor pointer), which is what makes the re-cite faithful.
     """
@@ -604,7 +604,7 @@ def _attach_source_refs(
 def _project_entities(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Fold the legacy buckets into the unified id-keyed registry. Deterministic
     and idempotent: every deposit source maps to a bucket already in the doc, so
-    this is a pure projection that backfills `entities` for any doc — including
+    this is a pure projection that backfills `entities` for any doc, including
     old ones written before the registry existed.
 
     Deposit order is least-authoritative first so the merge policy (richer source
@@ -696,7 +696,7 @@ async def get_state_doc(conversation_id: str) -> dict[str, Any]:
     """Read the structured investigation state, or the empty default shape.
 
     Branching: when the calling task is inside `turn_scope` AND the scoped turn
-    is registered in the turn tree, this returns the PATH-SCOPED doc instead —
+    is registered in the turn tree, this returns the PATH-SCOPED doc instead:
     the fold of `_apply_delta` over the deltas along root -> this turn. Sibling
     branches are invisible by construction. Outside a scope (legacy native loop,
     hydrate, old conversations without tree keys) the merged doc is returned
@@ -726,7 +726,7 @@ async def get_state_doc(conversation_id: str) -> dict[str, Any]:
     # over the other buckets, recomputed here so an OLD doc (resolved_entities /
     # named_ids / leads / sanctions but no `entities`) backfills transparently
     # and a NEW doc stays consistent even if a write path lagged. No migration
-    # write needed — the registry is always reconstructable from durable buckets.
+    # write needed: the registry is always reconstructable from durable buckets.
     base["entities"] = _project_entities(base)
     return base
 
@@ -840,7 +840,7 @@ def _apply_delta(doc: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
     # so every tool's deposit (search leads, profile/ownership/watchlist
     # neighbors via resolved_entities, the risk-path resolver via named_ids, and
     # strong check_sanctions hits via the sanctions ledger) lands in ONE
-    # id-keyed pool. Deterministic projection — no LLM, no network.
+    # id-keyed pool. Deterministic projection: no LLM, no network.
     doc["entities"] = _project_entities(doc)
     return doc
 
@@ -1148,7 +1148,7 @@ async def read_turn_deltas(conversation_id: str, turn_id: str) -> list[dict[str,
 
 
 def _normalize_doc(doc: dict[str, Any]) -> dict[str, Any]:
-    """Every key present + the registry projection recomputed — the same
+    """Every key present + the registry projection recomputed, the same
     normalization `get_state_doc` applies to a doc read from Redis."""
     base = _empty_state_doc()
     if isinstance(doc, dict):
@@ -1165,7 +1165,7 @@ def assemble_state_doc(
 ) -> dict[str, Any]:
     """PURE path-state assembler: fold `_apply_delta` (the exact read-modify
     core `merge_state_doc` persists) over a path's deltas, starting from a deep
-    copy of the base. Deterministic, no I/O — the branching evals exercise this
+    copy of the base. Deterministic, no I/O; the branching evals exercise this
     directly, and `get_path_state_doc` is just the Redis wrapper around it."""
     doc = _normalize_doc(json.loads(json.dumps(base_doc, default=str)))
     for delta in deltas:

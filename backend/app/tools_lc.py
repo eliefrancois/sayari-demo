@@ -45,7 +45,7 @@ def _anthropic_cached(tool: dict[str, Any]) -> dict[str, Any]:
     """An OpenAI-format function tool re-expressed in ANTHROPIC-native shape with
     an ephemeral cache breakpoint. langchain-anthropic passes a dict that already
     has {name, description, input_schema} through verbatim (preserving
-    cache_control), whereas its OpenAI->Anthropic converter drops unknown keys —
+    cache_control), whereas its OpenAI->Anthropic converter drops unknown keys,
     so the breakpoint tool must be emitted in native form to actually cache."""
     fn = tool["function"]
     return {

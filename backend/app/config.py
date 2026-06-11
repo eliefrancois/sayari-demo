@@ -60,7 +60,7 @@ class Settings(BaseSettings):
 
     # Lightweight intent router: a cheap structured classification call BEFORE the
     # main loop that labels the turn's intent, narrows the tool subset, and injects
-    # targeted guidance. The flag is a safety valve — off => full toolset, no
+    # targeted guidance. The flag is a safety valve: off => full toolset, no
     # router call. The model is a small/fast one so the added latency/credits are
     # minimal relative to the Sonnet investigation loop.
     intent_router_enabled: bool = Field(default=True, alias="INTENT_ROUTER_ENABLED")
@@ -70,7 +70,7 @@ class Settings(BaseSettings):
 
     # LangSmith tracing (only used by the LangGraph impl). When tracing is on and
     # an API key is present, LangChain/LangGraph auto-trace every graph run, node,
-    # and LLM call — no manual span wiring needed for the graph path.
+    # and LLM call, no manual span wiring needed for the graph path.
     langchain_tracing_v2: bool = Field(default=False, alias="LANGCHAIN_TRACING_V2")
     langchain_api_key: str = Field(default="", alias="LANGCHAIN_API_KEY")
     langchain_project: str = Field(

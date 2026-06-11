@@ -17,7 +17,7 @@ from app.intent import _CORROBORATION_TOOLS, _GUIDANCE, _INTENT_TOOLS, select_to
 
 Row = tuple[str, str, bool, str]
 
-# The intents whose narrowed subsets used to exclude corroboration tools — the
+# The intents whose narrowed subsets used to exclude corroboration tools, the
 # exact set the audit flagged as silently breaking the prompt's step 4.
 _NARROWED_INTENTS = (
     "identify_entity",
@@ -102,7 +102,7 @@ def _live_creds_present() -> bool:
 async def live_source_mix_rows() -> list[Row]:
     """One identify/profile turn on a leak-relevant subject (Roldugin appears in
     the Panama Papers AND is sanctioned) must show at least one non-Sayari tool
-    call or non-Sayari source_ref — proof the narrowed turn actually crossed
+    call or non-Sayari source_ref, proof the narrowed turn actually crossed
     sources, not just that it could."""
     case = "source_mix_live"
     if not _live_creds_present():

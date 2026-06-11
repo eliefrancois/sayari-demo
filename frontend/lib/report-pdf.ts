@@ -6,7 +6,7 @@
  * as a PDF from the native dialog. This keeps the export vector-quality and
  * text-selectable (unlike html2canvas rasters), needs zero new dependencies
  * (markdown rendering reuses `marked`, already in the bundle), and the
- * layout is plain CSS we fully control — a clean 1-3 page memo.
+ * layout is plain CSS we fully control: a clean 1-3 page memo.
  */
 
 import { marked } from "marked";

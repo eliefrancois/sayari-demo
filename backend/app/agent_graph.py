@@ -97,7 +97,7 @@ class TurnState(TypedDict):
     turn_nodes: Annotated[list[dict], operator.add]
     turn_edges: Annotated[list[dict], operator.add]
     # FULL sayari_search lead lists this turn (not just the pinned subset),
-    # stamped with from_turn/from_query — the source for state_doc["leads"].
+    # stamped with from_turn/from_query, the source for state_doc["leads"].
     turn_leads: Annotated[list[dict], operator.add]
     raw_strong_hits: Annotated[list[dict], operator.add]
     result_summary: RiskSummary | None
@@ -249,7 +249,7 @@ async def agent_node(state: TurnState) -> dict[str, Any]:
 
     When persisting (a live turn) and streaming is enabled, consume the model
     via `astream` and emit batched `token` events so the UI types the agent's
-    text out live — both reasoning narration and the terminator's narrative
+    text out live, both reasoning narration and the terminator's narrative
     (`answer` / `investigation_summary`). The accumulated chunks reconstruct the
     exact same final AIMessage `ainvoke` would have produced, so the rest of the
     graph is unaffected. Evals (persist=False) use the cheaper `ainvoke`."""
@@ -343,7 +343,7 @@ def _tag_subject_membership(
     """Stamp `subject_ids` + `introduced_turn_id` onto a tool's emitted nodes.
 
     shortest_path is the multi-subject case: the source node belongs to subject
-    A, the target node to subject B, and every intermediate to BOTH — so a
+    A, the target node to subject B, and every intermediate to BOTH, so a
     shared intermediary settles in the A∩B overlap and both hulls enclose it.
     Single-subject tools attribute every node to the entity they were called on.
     Membership is unioned across turns by merge_graph_pure's id-keyed dedupe."""
@@ -430,7 +430,7 @@ async def tools_node(state: TurnState) -> dict[str, Any]:
                 # Feeding back the giant e.errors() blob just grows the input and
                 # reinforces the loop, so send a SHORT targeted nudge to emit a
                 # smaller terminator instead. Otherwise (a genuine shape error),
-                # the structured errors are the useful signal — keep them.
+                # the structured errors are the useful signal, keep them.
                 truncated = (
                     (getattr(last, "response_metadata", None) or {}).get("stop_reason")
                     == "max_tokens"
@@ -572,7 +572,7 @@ def _in_hand_identity_index(state: TurnState) -> dict[str, dict[str, Any]]:
     this turn's STRUCTURED tool outputs: the traversed graph nodes and the full
     search-lead lists. Used to name (and only then persist) the entity ids the
     agent references through structured terminator fields (gap b). No prose
-    parsing and no extra calls — every entry traces to data captured in
+    parsing and no extra calls; every entry traces to data captured in
     tools_node. A traversed node wins over a lead carrying the same id."""
     idx: dict[str, dict[str, Any]] = {}
     for n in state["turn_nodes"]:
@@ -613,7 +613,7 @@ def _referenced_entity_ids(
     """Entity ids the agent named through the typed terminator SCHEMA:
     TurnAnswer.referenced_node_ids, claim source_refs (node_id / sayari_entity_id),
     and the ids embedded in sayari_risk_factors traversal paths. This NEVER reads
-    the prose `answer` string (the HaluMem / hallucinated-write trap) — only
+    the prose `answer` string (the HaluMem / hallucinated-write trap), only
     validated schema fields. sanctions_ids are deliberately excluded; those are
     watchlist rows, not entities."""
     ids: set[str] = set()
@@ -648,10 +648,10 @@ def _build_state_delta(
     answer: TurnAnswer | None,
 ) -> dict[str, Any]:
     """Build the structured state_doc delta for this turn from data already in
-    hand — no extra model/tool calls. Resolved entities come from the traversed
+    hand, no extra model/tool calls. Resolved entities come from the traversed
     nodes + the summary's primary subject + the entities the agent named through
     structured terminator fields (gap b); leads from turn_leads; sanctions
-    verdicts (confirmed AND dismissed, on BOTH turn types — gap a) from
+    verdicts (confirmed AND dismissed, on BOTH turn types, gap a) from
     build_sanctions_review; pinned ids from the turn + pinned leads + the
     resolved subject; one turn_log row."""
     ti = state["turn_index"]
@@ -727,7 +727,7 @@ def _build_state_delta(
     # terminator (both RiskSummary and TurnAnswer carry sanctions_hits);
     # dismissed = strong check_sanctions matches this turn it did NOT keep
     # (name collisions). Gap (a): capturing the dismissed set on ANSWER turns
-    # too — previously only investigation turns did, so a dismissed subsidiary
+    # too: previously only investigation turns did, so a dismissed subsidiary
     # surfaced on an answer turn (the common conversational-default path)
     # vanished by the next turn. build_sanctions_review handles both shapes.
     sanc_rows: list[dict[str, Any]] = []
@@ -765,7 +765,7 @@ def _build_state_delta(
         pinned_ids.append(summary.entity_id)
 
     # Structured claims (doc 09 §5): the typed terminator's claims, with the
-    # entity_ids their source_refs resolve to. Structured-only — never the prose
+    # entity_ids their source_refs resolve to. Structured-only, never the prose
     # `answer` string (the HaluMem / hallucinated-write trap).
     claim_rows: list[dict[str, Any]] = []
     if terminator is not None:
@@ -841,7 +841,7 @@ async def finalize_node(state: TurnState) -> dict[str, Any]:
 
     # Persist the structured investigation state (exact recall): resolved
     # entities, the full lead lists, sanctions verdicts, pinned ids, turn log.
-    # Deterministic merge from data already in hand — no extra model/tool calls.
+    # Deterministic merge from data already in hand, no extra model/tool calls.
     delta = _build_state_delta(state, summary, answer)
     await conversations.merge_state_doc(cid, delta)
 
@@ -894,7 +894,7 @@ async def finalize_node(state: TurnState) -> dict[str, Any]:
     # Close out the tree entry: terminator metadata for the GET tree payload,
     # and `context_after` so a child turn (linear or fork) starts from THIS
     # path's narrative digest. The final state delta was already appended by
-    # merge_state_doc above, so flipping status to done here is safe — a done
+    # merge_state_doc above, so flipping status to done here is safe; a done
     # turn's delta list never grows again.
     if turn_id is not None:
         await conversations.update_turn_entry(
@@ -1048,7 +1048,7 @@ async def run_turn(
     model: str | None = None,
 ) -> None:
     """Run one conversation turn through the graph. Drop-in replacement for
-    agent_native.run_turn — same SSE events and same Redis writes.
+    agent_native.run_turn, same SSE events and same Redis writes.
 
     `model` optionally selects the main-agent model per request (allowlisted via
     resolve_model; None = default Sonnet 4.5).

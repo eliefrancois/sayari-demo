@@ -16,7 +16,7 @@ from app.agent_common import build_followup_prefetch, graph_payload
 from app.schema import Claim, SanctionsHit, SourceRef, TurnAnswer
 from app.tools import recall_state_tool
 
-# A row is (case, check, passed, comment) — the same shape run_evals prints.
+# A row is (case, check, passed, comment), the same shape run_evals prints.
 Row = tuple[str, str, bool, str]
 
 
@@ -72,7 +72,7 @@ def ims_invariant_violations(
       Every entity the agent names with an id in its answer
       (referenced_node_ids + claims.source_refs) MUST appear in `entities`.
 
-    Returns the set of referenced ids MISSING from the registry — empty means the
+    Returns the set of referenced ids MISSING from the registry; empty means the
     invariant holds. Callers pass the ids that were nameable from the turn's
     STRUCTURED tool outputs (the ones the write path is obligated to persist; an
     id with no structured backing is deliberately NOT written, doc 09 §10)."""
@@ -90,7 +90,7 @@ async def multiturn_recall_rows() -> list[Row]:
 
     Asserts (doc 09 §11): (a) the dismissed subsidiary is recoverable in turn 2
     via recall_state(kind="sanctions") AND kind="entities"); (b) it does NOT
-    require re-running check_sanctions — the recall path (the deterministic
+    require re-running check_sanctions: the recall path (the deterministic
     follow-up prefetch + the zero-credit recall_state read) supplies the answer,
     so a correct turn 2 re-spends no tool call."""
     case = "multiturn_recall_rosneft"
@@ -206,7 +206,7 @@ async def sanctioned_union_rows() -> list[Row]:
     hit (lands in the ledger) and a traversed subsidiary whose sanctioned flag
     comes from Sayari (lands ONLY in the registry). Asserts: (a) the registry
     union surfaces both; (b) the Sayari-flagged subsidiary is NOT in the ledger
-    (the stores stay distinct — provenance split preserved, doc 09 discipline);
+    (the stores stay distinct, provenance split preserved, doc 09 discipline);
     (c) the ledger output carries the deterministic hint steering the agent to
     ALSO query kind="entities" so an enumeration self-corrects."""
     case = "sanctioned_union"
@@ -226,7 +226,7 @@ async def sanctioned_union_rows() -> list[Row]:
         "name": "Tuapse Refinery LLC",
         "label": "Entity",
         "source_system": "sayari",
-        # Sanctioned per SAYARI risk factors — never adjudicated via
+        # Sanctioned per SAYARI risk factors, never adjudicated via
         # check_sanctions, so it must NOT appear in the verdict ledger.
         "properties": {"sanctioned": True, "pep": False, "countries": ["RUS"]},
     }
@@ -298,7 +298,7 @@ async def ims_invariant_rows() -> list[Row]:
     this turn's tools: an ownership owner (traversed node) cited in both a claim
     source_ref AND referenced_node_ids, a search lead named in referenced_node_ids,
     and a dismissed SDN hit cited in a claim by sanctions_id. The IMS invariant
-    must hold — every NAMED id that the tools could name appears in the registry —
+    must hold (every NAMED id that the tools could name appears in the registry)
     and this case would FAIL if the write path dropped any of them.
 
     A HaluMem negative control rides along: an id that exists ONLY in the prose
@@ -374,13 +374,13 @@ async def ims_invariant_rows() -> list[Row]:
     invariant_holds = (not missing) and {"sayari-owner", "sayari-lead"}.issubset(must_persist)
 
     # The dismissed SDN hit, cited in a claim by sanctions_id, lands in the
-    # registry via the ledger — so it is re-citable on a later turn.
+    # registry via the ledger, so it is re-citable on a later turn.
     sanctions_entity_present = (
         "ofac-55501" in entities and entities["ofac-55501"].get("sanctioned") is True
     )
 
     # The traversed owner is graph-bound (turn_nodes -> merge_graph); the lead is
-    # registry-only (named but not traversed) — both recoverable, per Phase A.
+    # registry-only (named but not traversed); both recoverable, per Phase A.
     graph_node_ids = {n["id"] for n in state["turn_nodes"]}
     traversed_on_graph = "sayari-owner" in graph_node_ids
     lead_in_registry_only = "sayari-lead" in entities and "sayari-lead" not in graph_node_ids
@@ -406,7 +406,7 @@ async def ims_invariant_rows() -> list[Row]:
 async def recap_multiturn_rows() -> list[Row]:
     """After an investigation turn that persisted real findings, a recap turn must
     (a) route to the LIGHTWEIGHT submit_answer / TurnAnswer terminator (not the
-    heavy submit_summary), and (b) be answerable FAITHFULLY from durable state —
+    heavy submit_summary), and (b) be answerable FAITHFULLY from durable state:
     the prior claim + the resolved sanctioned subject are recoverable via
     recall_state, so the recap can be grounded without re-running the tools."""
     case = "recap_multiturn"

@@ -6,13 +6,13 @@
  * Matching is robust to three things that otherwise sink the Gazprom-style runs
  * (where prose, the Sayari registry, and OpenSanctions all spell the same
  * entity differently):
- *   1. Cyrillic vs Latin — names are transliterated to a Latin baseline, so
+ *   1. Cyrillic vs Latin: names are transliterated to a Latin baseline, so
  *      "ГАЗПРОМ", "Gazprom", and the OpenSanctions "GAZPROM" all converge.
- *   2. Corporate-form noise — leading/trailing legal forms (ПАО/PAO,
+ *   2. Corporate-form noise: leading/trailing legal forms (ПАО/PAO,
  *      ОАО/OAO, ООО/OOO, "publichnoe aktsionernoe obshchestvo", LLC, Ltd, …)
  *      are stripped to an alias so prose "Gazprom" matches the registry's
  *      "ПУБЛИЧНОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО ГАЗПРОМ".
- *   3. Casing / punctuation — guillemets, quotes, and case are flattened.
+ *   3. Casing / punctuation: guillemets, quotes, and case are flattened.
  *
  * False positives are guarded by (a) a minimum normalized length, (b) a
  * stopword list so a bare legal/generic word never becomes a match, and (c)
@@ -115,8 +115,8 @@ function isUsableKey(key: string): boolean {
 
 /**
  * Alias keys for a normalized name: the corporate-form-stripped variants. Used
- * on BOTH sides — aliases are indexed at build time, and a query is also tried
- * against its own aliases — so "PAO Gazprom", "Gazprom", and "ПАО «Газпром»"
+ * on BOTH sides: aliases are indexed at build time, and a query is also tried
+ * against its own aliases, so "PAO Gazprom", "Gazprom", and "ПАО «Газпром»"
  * all reach "gazprom". Excludes the full key itself; callers add that.
  */
 export function aliasKeys(fullKey: string): string[] {

@@ -39,7 +39,7 @@ _WATCHLIST_DATASETS = {
     "mc_fund_freezes",
 }
 
-# Below this score, OpenSanctions itself considers the match "weak" — surface
+# Below this score, OpenSanctions itself considers the match "weak", so surface
 # in the response but tag as low-confidence so the agent can decide.
 _STRONG_MATCH_SCORE = 0.70
 
@@ -125,7 +125,7 @@ async def check_sanctions(name: str, schema: str = "Person") -> list[SanctionsHi
         props = m.get("properties", {}) or {}
         # OpenSanctions returns list-valued properties even for single values.
         # We pass them through verbatim so the agent sees the same shape it
-        # would see in the OS UI — and can spot list mismatches like
+        # would see in the OS UI, and can spot list mismatches like
         # subject country=US but match countries=["ru", "lt"].
         hits.append(
             SanctionsHit(

@@ -214,7 +214,7 @@ export function TurnCard({
   );
 }
 
-/** Collapsible reasoning step — compact echo of lmcanvas's ThinkingView. */
+/** Collapsible reasoning step: compact echo of lmcanvas's ThinkingView. */
 function ThoughtBlock({ thought }: { thought: AgentThought }) {
   const [expanded, setExpanded] = useState(false);
   return (

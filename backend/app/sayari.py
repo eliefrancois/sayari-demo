@@ -155,7 +155,7 @@ def related_entity_lookup(raw_profile: dict[str, Any]) -> dict[str, dict[str, An
     """id -> {label, type, sanctioned, pep, countries} from the profile's
     1-hop `relationships` block. A risk factor's `traversal_path` lands on these
     connected entities, so this lets us NAME path nodes from data already in the
-    profile — no per-id get_entity call (which would cost credits/latency).
+    profile, no per-id get_entity call (which would cost credits/latency).
 
     Empty when the profile carries no relationships block (e.g. the
     relationship-free `entity_summary`), in which case the caller falls back to
@@ -225,7 +225,7 @@ def resolve(
     limit: int = 10,
 ) -> list[SayariCandidate]:
     """Resolve a raw name (+ optional address/country/type) to ranked Sayari
-    candidates. Returns CANDIDATES, not an answer — the agent picks."""
+    candidates. Returns CANDIDATES, not an answer; the agent picks."""
     res = get_client().resolution.resolution(
         name=name,
         address=address or None,
@@ -262,7 +262,7 @@ def resolve(
 
 def profile(entity_id: str) -> dict[str, Any]:
     """Full EntityDetails as a plain dict. Slimming for the model is the tool
-    layer's job (slim_sayari_profile) — this returns the raw shape."""
+    layer's job (slim_sayari_profile); this returns the raw shape."""
     ent = _as_dict(get_client().entity.get_entity(entity_id))
     return ent if isinstance(ent, dict) else {}
 
@@ -292,7 +292,7 @@ def ownership(
 
 def _top_risk_names(risk: dict[str, Any], n: int = 3) -> list[str]:
     """The N most-severe risk-factor NAMES on an entity-lite dict (for triage
-    cards in search results — not the full factor map)."""
+    cards in search results, not the full factor map)."""
     if not isinstance(risk, dict):
         return []
     ranked: list[tuple[int, str]] = []
@@ -304,7 +304,7 @@ def _top_risk_names(risk: dict[str, Any], n: int = 3) -> list[str]:
 
 
 def search(q: str, limit: int = 10) -> list[SayariSearchCandidate]:
-    """Broad/fuzzy Entity Search (lead-gen) — distinct from precise resolve().
+    """Broad/fuzzy Entity Search (lead-gen), distinct from precise resolve().
 
     Returns slim candidate leads (id, label, type, country, flags, top risk
     names), NOT a ranked answer. Use to cast a wide net; the agent triages the
@@ -332,7 +332,7 @@ def search(q: str, limit: int = 10) -> list[SayariSearchCandidate]:
 
 def summary(entity_id: str) -> dict[str, Any]:
     """Relationship-free entity profile (cheaper than get_entity). Same shape as
-    profile() minus the relationships block — used for SECONDARY entities to
+    profile() minus the relationships block, used for SECONDARY entities to
     control tokens/credits. Slimming stays the tool layer's job."""
     ent = _as_dict(get_client().entity.entity_summary(entity_id))
     return ent if isinstance(ent, dict) else {}
@@ -340,7 +340,7 @@ def summary(entity_id: str) -> dict[str, Any]:
 
 def watchlist(entity_id: str, limit: int = 10, max_depth: int = 4) -> dict[str, Any]:
     """Traverse from the target to PEP/watchlisted entities. Returns the raw
-    traversal dict (data[] of {source, target, path}) — same shape as ownership,
+    traversal dict (data[] of {source, target, path}), same shape as ownership,
     so it maps through the same neighborhood builder. Surfaces INDIRECT exposure
     (vs OpenSanctions check_sanctions, which tests DIRECT listing)."""
     limit = max(1, min(limit, _MAX_WATCHLIST_LIMIT))
@@ -360,7 +360,7 @@ def record(record_id: str) -> dict[str, Any]:
 
 # --- Pin relevance filter --------------------------------------------------
 # Tunable knobs for which broad-search leads are RELEVANT enough to PIN to the
-# graph. This only gates graph PINNING — the full lead list always goes to the
+# graph. This only gates graph PINNING; the full lead list always goes to the
 # model. Generic tokens (legal forms, connectors) carry no entity identity, so
 # we strip them from both the query and a candidate label before measuring
 # name overlap; otherwise "Rosneft Trading S.A." and the query "Rosneft Trading"
@@ -399,9 +399,9 @@ def _relevant_for_pin(
     Conservative, name-driven gate (applied ONLY to pinning, never to the leads
     returned to the model): the candidate label must share at least one
     meaningful token with the query. This drops fuzzy lexical hits that match
-    only on a brand fragment in a different script or on stripped stopwords —
+    only on a brand fragment in a different script or on stripped stopwords,
     e.g. a Russian-language "trade UNION organization of Rosneft" whose label
-    shares no Latin identity token with "Rosneft Trading" — while keeping every
+    shares no Latin identity token with "Rosneft Trading", while keeping every
     real "Rosneft Trading / Rosneft Trade" company. Fails OPEN (keeps the lead)
     when the query has no usable tokens, so we never over-filter."""
     if not query_tokens:
@@ -539,7 +539,7 @@ def unnamed_risk_path_ids(
 ) -> list[str]:
     """Risk-path entity ids that the in-hand `id_lookup` can't name, ranked by
     DEGREE (most-connected first) so a bounded resolver spends its budget on the
-    most decision-relevant unknown nodes — the central hubs of the risk chains,
+    most decision-relevant unknown nodes, the central hubs of the risk chains,
     not the leaf flotsam. Ties break by first appearance for stable ordering.
     Excludes the root and any id the lookup already names."""
     root_id = slim_profile.get("id")
@@ -574,8 +574,8 @@ def resolve_unnamed_ids(
     paths of a hub entity, so most path nodes would render as anonymous blobs.
     The SDK exposes no batch entity endpoint, so we fan cheap, relationship-free
     entity_summary calls out CONCURRENTLY (I/O-bound HTTP on a sync client) and
-    cap the count to keep credits/latency bounded. Per-id failures fail OPEN —
-    skipped, keeping their "Unresolved" placeholder — because naming is
+    cap the count to keep credits/latency bounded. Per-id failures fail OPEN:
+    skipped, keeping their "Unresolved" placeholder, because naming is
     best-effort and must never crash an investigation.
 
     Returns id -> {label, type, sanctioned, pep, countries}, the same shape as
@@ -613,7 +613,7 @@ def _risk_path_node(
 ) -> GraphNode:
     """Build a path node, NAMING it from `id_lookup` when the connected entity is
     known (profile relationships first, then conversation-known entities). Falls
-    back to a clearly-labelled placeholder — never an invented name — when the
+    back to a clearly-labelled placeholder, never an invented name, when the
     id is genuinely unresolved."""
     info = id_lookup.get(nid)
     if info and info.get("label"):
@@ -647,8 +647,8 @@ def risk_paths_to_neighborhood(
     entity ids, so these merge with ownership nodes (gaining real names).
 
     `id_lookup` (id -> {label, type, sanctioned, pep, countries}) names the
-    connected path nodes from data already in hand — the profile's relationships
-    block and/or entities seen earlier this conversation — so the decision-
+    connected path nodes from data already in hand: the profile's relationships
+    block and/or entities seen earlier this conversation, so the decision-
     relevant far node (e.g. the sanctioned related entity) shows its real name
     instead of an anonymous "…id". No extra Sayari calls."""
     nodes: dict[str, GraphNode] = {}
@@ -1045,7 +1045,7 @@ def parse_shortest_path(
 ) -> SayariShortestPath:
     """Raw shortest-path dict -> SayariShortestPath. `has_sanctioned_intermediary`
     fires only on INTERMEDIATE hops (the endpoints' own status is visible on the
-    nodes themselves) — the headline 'clean counterparty, dirty chain' signal."""
+    nodes themselves): the headline 'clean counterparty, dirty chain' signal."""
     items = raw.get("data") or []
     item = items[0] if items and isinstance(items[0], dict) else {}
     target = item.get("target") or {}
@@ -1088,7 +1088,7 @@ def shortest_path_to_neighborhood(
 ) -> Neighborhood:
     """Map a shortest-path result onto the Neighborhood shape, reusing the
     ownership path replayer (same {source, target, path} item shape), then fold
-    in the `target` endpoint node — the EntityDetails on the result names it
+    in the `target` endpoint node: the EntityDetails on the result names it
     better than a bare path hop (and guarantees it renders when the replay
     produced no hop for it).
 

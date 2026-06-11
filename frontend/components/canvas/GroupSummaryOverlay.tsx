@@ -12,7 +12,7 @@
  * overlap-stagger that pushes nested groups outward.
  *
  * What was adapted: the donor's per-node LLM summaries + generation skeletons
- * are dropped (this app uses synchronous heuristic titles only — no LLM/IPC),
+ * are dropped (this app uses synchronous heuristic titles only, no LLM/IPC),
  * and the donor's 10-color saturated rgba palette is replaced with a single
  * neutral OKLCH treatment driven by this app's design tokens (see the
  * `.group-summary-overlay` font-lock in globals.css). Color is reserved for

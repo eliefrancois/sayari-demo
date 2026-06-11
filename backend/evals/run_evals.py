@@ -92,13 +92,13 @@ def ofac_non_sdn_labeling(out: dict[str, Any]) -> tuple[bool, str]:
     BIS Entity List / export controls), NEVER promoted to 'OFAC SDN' / 'SDN #'.
 
     Ground truth: Huawei is on the OFAC Consolidated (non-SDN) list, the US Trade
-    CSL, US SAM Exclusions, and the BIS Entity List — it is NOT on the OFAC SDN
+    CSL, US SAM Exclusions, and the BIS Entity List. It is NOT on the OFAC SDN
     (blocked-persons) list. This locks in the sanctions-accuracy fix so the model
     can't silently upgrade a consolidated/Entity-List posture to SDN or fabricate
     an 'OFAC SDN #'."""
     r = _result(out)
-    # investigation_summary (summary) or answer (conversational) — whichever the
-    # terminator carried — plus claims/factors/hits.
+    # investigation_summary (summary) or answer (conversational), whichever the
+    # terminator carried, plus claims/factors/hits.
     parts: list[str] = [r.get("investigation_summary") or "", r.get("answer") or ""]
     parts += [c.get("text") or "" for c in r.get("claims", [])]
     for f in r.get("sayari_risk_factors") or []:
@@ -132,7 +132,7 @@ def name_match_hedged(out: dict[str, Any]) -> tuple[bool, str]:
     """Rosneft name-match guard: when check_sanctions returns a STRONG but
     NAME-ONLY fuzzy match between the subject (Rosneft Global Trade S.A.) and a
     DIFFERENT SDN-listed legal entity (Rosneft Trading S.A.), the agent must
-    HEDGE — it must NOT promote a name-only match into a direct sanctions claim
+    HEDGE: it must NOT promote a name-only match into a direct sanctions claim
     on the SUBJECT. It may surface the name similarity / genuine adjacency, but
     Global Trade itself is NOT on the OFAC SDN list.
 
@@ -150,7 +150,7 @@ def name_match_hedged(out: dict[str, Any]) -> tuple[bool, str]:
         parts += h.get("lists") or []
     low = " ".join(p for p in parts if p).lower()
 
-    # (b) The SDN hit must be framed as a separate / closely-named entity — either
+    # (b) The SDN hit must be framed as a separate / closely-named entity, either
     # via explicit separateness/name-match language, or by attributing the SDN
     # listing to "Rosneft Trading S.A." rather than to the subject.
     acknowledges_separate = any(
@@ -280,7 +280,7 @@ def resolved_subject(out: dict[str, Any]) -> tuple[bool, str]:
 def report_ready_true(out: dict[str, Any]) -> tuple[bool, str]:
     """Stage 4: a substantive investigative answer (resolved entity + a risk/
     ownership/sanctions signal) must set report_ready=true so the UI can offer a
-    formal memo — WITHOUT the agent auto-emitting the report."""
+    formal memo, WITHOUT the agent auto-emitting the report."""
     r = _result(out)
     rr = bool(r.get("report_ready"))
     return rr, f"kind={out['kind']}, report_ready={rr}"
@@ -349,7 +349,7 @@ EVALUATORS: dict[str, Evaluator] = {
 
 
 # Each case is run through the live agent ONCE; the listed checks all score it.
-# Kept deliberately small — every investigation case burns ~60-90s of API time.
+# Kept deliberately small: every investigation case burns ~60-90s of API time.
 CASES: list[dict[str, Any]] = [
     {
         "name": "greeting",
@@ -419,7 +419,7 @@ CASES: list[dict[str, Any]] = [
     # Name-match precision guard: check_sanctions returns a STRONG but NAME-ONLY
     # fuzzy match (~0.80) between the subject "Rosneft Global Trade S.A."
     # (Luxembourg/Russia) and the SDN-listed "Rosneft Trading S.A." (Geneva).
-    # The agent must HEDGE — surface the name similarity + genuine adjacency
+    # The agent must HEDGE: surface the name similarity + genuine adjacency
     # (e.g. SOE exposure via OJSC ORENBURGNEFT) but NOT promote a name-only match
     # into a direct SDN/sanctioned claim on the subject (they are separate legal
     # entities).
@@ -475,7 +475,7 @@ def _memory_writepath_rows() -> list[tuple[str, str, bool, str]]:
     `evaluate_turn` runs with persist=False, so nothing reaches Redis and
     `recall_state` has no state_doc to read. So the Rosneft multi-turn recall case
     is pinned here as a unit-style assertion on the exact projection finalize_node
-    persists — `agent_graph._build_state_delta` — which is where Phase A lives.
+    persists (`agent_graph._build_state_delta`), which is where Phase A lives.
 
     Scenario (turn 1, conversational-default ANSWER turn): check_sanctions surfaced
     a STRONG match on "Rosneft Trading S.A." that the agent DISMISSED as a name
@@ -562,7 +562,7 @@ def _entity_registry_rows() -> list[tuple[str, str, bool, str]]:
     AND a lower-severity ownership neighbor (a clean subsidiary traversed onto
     the graph). The SDN entity must (1) be deposited into the registry as a
     first-class sanctioned entity, and (2) rank FIRST by severity, ahead of the
-    ownership neighbor — the gap that made the agent miss it on Gazprom."""
+    ownership neighbor, the gap that made the agent miss it on Gazprom."""
     from app import conversations
     from app.schema import SanctionsHit, TurnAnswer
 
@@ -596,7 +596,7 @@ def _entity_registry_rows() -> list[tuple[str, str, bool, str]]:
         "raw_strong_hits": [sdn_hit],
     }
     # An answer turn that DISMISSED the SDN hit as a name collision (so it is not
-    # in sanctions_hits) — it must still land in the registry as a sanctioned
+    # in sanctions_hits), it must still land in the registry as a sanctioned
     # entity, since the matched entity itself is genuinely SDN-listed.
     answer = TurnAnswer(answer="Reviewed connections.", sanctions_hits=[])
 
@@ -649,7 +649,7 @@ def _injection_shrink_rows() -> list[tuple[str, str, bool, str]]:
 
     1. Fixed budget. `_render_state_block` rendered over a SMALL investigation and
        a HUGE one (300 entities, 60 leads, 80 sanctions rows) must be the same
-       bounded size — the core cannot grow with the case. This is the
+       bounded size, the core cannot grow with the case. This is the
        context-stuffing fix as a hard assertion.
 
     2. Faithful recall through the lean core. The canonical Rosneft turn-1 outcome
@@ -713,7 +713,7 @@ def _injection_shrink_rows() -> list[tuple[str, str, bool, str]]:
     dismissed_not_inlined = "Rosneft Trading" not in large_block
 
     # (2b) The dismissed row stays byte-exact in the structured state the core
-    # points at, and projects into the registry as a sanctioned entity — the
+    # points at, and projects into the registry as a sanctioned entity, the
     # recall_state(kind="sanctions"/"entities") path the agent is told to use.
     ledger_names = [r.get("matched_name") for r in large["sanctions_adjudicated"]]
     recoverable_in_ledger = "Rosneft Trading S.A." in ledger_names
@@ -859,7 +859,7 @@ def _conversation_index_rows() -> list[tuple[str, str, bool, str]]:
     Pins three properties, no Redis: (1) live members keep ZSET (recency)
     order and surface title/turn_count/state; (2) a member whose meta expired
     (per-key 24h TTL beat the index entry) is FILTERED OUT and returned as dead
-    so the endpoint can lazily ZREM it — same for unparseable meta; (3) a
+    so the endpoint can lazily ZREM it (same for unparseable meta); (3) a
     missing state falls back to 'idle' rather than dropping the row."""
     import json as _json
 
@@ -942,7 +942,7 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     )
     native_fires = (
         s_native.dual_use
-        and not s_native.dual_use_hits  # no HS hit — the NATIVE signal fired
+        and not s_native.dual_use_hits  # no HS hit, the NATIVE signal fired
         and s_native.supplier is not None
         and s_native.supplier.bis_tags == ["exports_bis_high_priority_items_critical"]
     )
@@ -980,7 +980,7 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     # (4) Shortest path. The fixture uses the REAL Sayari shape: `path` holds
     # only the INTERMEDIATE hops and the destination is a SEPARATE `target`
     # field (NOT a final path hop). The old fixture put the target inside `path`,
-    # which masked the Phase 0 bug — the ownership replayer draws prev->hop edges,
+    # which masked the Phase 0 bug: the ownership replayer draws prev->hop edges,
     # so when the target rode along as the last hop the closing edge appeared for
     # free. With intermediates-only `path`, the last-hop -> target edge
     # (mid-1 -> tgt-1, mirroring the real Roldugin -> Kerimov -> Gazprom case)
@@ -1010,7 +1010,7 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     nb_ok = {n.id for n in nb.nodes} == {"src-1", "mid-1", "tgt-1"} and any(
         n.id == "mid-1" and n.properties.get("sanctioned") for n in nb.nodes
     )
-    # Phase 0 regression: the intermediary is NOT left a disconnected leaf — the
+    # Phase 0 regression: the intermediary is NOT left a disconnected leaf, the
     # closing mid-1 -> tgt-1 edge is present (the Kerimov -> Gazprom edge the old
     # mapper dropped). Both legs of src-1 -> mid-1 -> tgt-1 must exist.
     sp_edges = {(e.source, e.target) for e in nb.edges}
@@ -1035,13 +1035,13 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     named_node = next((n for n in nb_named.nodes if n.id == "kerimov"), None)
     named_ok = named_node is not None and named_node.name == "Suleiman Kerimov"
     # The hop arrives with NO type, so it would default to the "Other" label;
-    # the conversation-known type ("person") must upgrade it to "Officer" — a
+    # the conversation-known type ("person") must upgrade it to "Officer": a
     # known intermediary must not render as "Other" when its type is known.
     named_label_ok = named_node is not None and named_node.label == "Officer"
 
     # Phase 1 regression: subject-membership attribution + union. A shortest_path
     # turn tags the source to subject A only, the target to subject B only, and
-    # the INTERMEDIATE to BOTH — and merge_graph_pure UNIONS those across deltas
+    # the INTERMEDIATE to BOTH, and merge_graph_pure UNIONS those across deltas
     # rather than last-write-wins, so the shared node ends up in the A∩B overlap.
     sp_nodes = [
         {"id": "src-1", "label": "Entity", "name": "Roldugin", "subject_ids": []},
@@ -1109,7 +1109,7 @@ async def _episodic_disabled_rows() -> list[tuple[str, str, bool, str]]:
     eval suite + live demo run today). This locks in that the new infrastructure
     cannot regress the existing flow:
 
-    1. is_enabled() is False with no vector creds / flag — the single gate.
+    1. is_enabled() is False with no vector creds / flag, the single gate.
     2. recall_memory returns a clean configured=false result whose note steers the
        agent to recall_state (the fallback the prompt promises), NOT an error.
     3. write_episode no-ops (returns False) so finalize never blocks or writes.
@@ -1180,7 +1180,7 @@ async def _episodic_enabled_mock_rows() -> list[tuple[str, str, bool, str]]:
     inject a fake Upstash Vector index and assert (1) write_episode upserts the
     raw-text episode under the `{cid}:{turn}` id in the conversation's namespace,
     and (2) query_episodes re-ranks by similarity x recency x salience (not raw
-    cosine) — a recent, lower-similarity episode can outrank an older, higher-
+    cosine): a recent, lower-similarity episode can outrank an older, higher-
     similarity one. Restores the module afterwards so the rest of the suite runs
     with episodic disabled (the no-op contract)."""
     from app import episodic
@@ -1264,7 +1264,7 @@ async def _run_local(
     passed = 0
     rows: list[tuple[str, str, bool, str]] = []
 
-    # Deterministic write-path + registry checks first — instant, no API spend.
+    # Deterministic write-path + registry checks first: instant, no API spend.
     # Pins the Investigation Memory Subsystem fixes (Phase A write-path widening,
     # Phase B unified registry) the live harness can't observe (persist=False).
     for name, fn in (
@@ -1285,13 +1285,13 @@ async def _run_local(
             rows.append((name, "deterministic_check", False, f"crashed: {e}"))
             total += 1
 
-    # Phase D: episodic memory — the graceful-no-op contract (disabled, default)
+    # Phase D: episodic memory, the graceful-no-op contract (disabled, default)
     # and a mock-backed enabled-path check (async, so run separately).
     # Phase F: the multi-turn memory harness (doc 09 §11). Runs N sequential
     # turns in ONE conversation, persisting state_doc between turns exactly as
     # production does, then asserts later-turn recall WITHOUT re-running tools:
     # the Rosneft regression, the IMS invariant, and a faithful recap.
-    # Stage 2a: the branching (turn tree) checks — fork isolation, path graph
+    # Stage 2a: the branching (turn tree) checks: fork isolation, path graph
     # accumulation, and the linear no-fork regression (see evals/branching.py).
     for nm, afn in (
         ("episodic_disabled", _episodic_disabled_rows),
@@ -1403,7 +1403,7 @@ async def _run_langsmith(model: str | None = None) -> int:
             # every evaluator to every example, so without this guard the grid
             # becomes an NxM patchwork (e.g. sanctions_present scored against the
             # greeting case). Returning None skips, so the grid shows exactly the
-            # 14 relevant cells the local run does — all green.
+            # 14 relevant cells the local run does, all green.
             applicable = (getattr(example, "metadata", None) or {}).get("checks", [])
             if check not in applicable:
                 return None

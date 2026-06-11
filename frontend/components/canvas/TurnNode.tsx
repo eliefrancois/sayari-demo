@@ -3,12 +3,12 @@
 /*
  * React Flow node types for the branching investigation canvas.
  *
- * Donor: local-lmcanvas (MIT License, Copyright (c) 2026 Max Lee) —
+ * Donor: local-lmcanvas (MIT License, Copyright (c) 2026 Max Lee):
  * invisible per-side handles (NodeHandles.tsx), hover-revealed circular "+"
  * follow-up button and nodrag content zones (CustomNode.tsx), drop-in motion.
  * Adapted to this app's Turn shape: the card content is the stage-1 TurnCard,
  * the Risk Report renders as a distinct attached card, and branching is
- * analyst-driven only (spec §4 — the agent never creates branches).
+ * analyst-driven only (spec §4: the agent never creates branches).
  */
 
 import { memo, useEffect, useRef, useState } from "react";

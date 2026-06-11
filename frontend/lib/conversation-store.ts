@@ -52,7 +52,7 @@ export interface Turn {
   index: number;
   /**
    * Stable server turn id (stage 2a tree). Null only for legacy turns that
-   * predate branching — those render as a flat vertical chain and can't be
+   * predate branching: those render as a flat vertical chain and can't be
    * forked from or time-traveled to.
    */
   turnId: string | null;
@@ -61,7 +61,7 @@ export interface Turn {
    * dispatched optimistically before the server assigns its turnId. The
    * canvas keys node positions on this so the card doesn't jump or re-place
    * when the server id arrives (the temp -> server reconcile). Null on
-   * hydrated turns — those key on turnId directly.
+   * hydrated turns, which key on turnId directly.
    */
   clientId: string | null;
   /** Parent turn in the tree. Null for the root (and all legacy turns). */
@@ -119,7 +119,7 @@ export interface ConversationState {
   latestSearchMeta: { shown: number; total: number } | null;
 
   /**
-   * The UNPINNED leads from the most recent broad search — rendered only as a
+   * The UNPINNED leads from the most recent broad search, rendered only as a
    * transient overlay when `showUnpinnedLeads` is true (clicking the badge).
    * Deliberately kept OUT of `nodes`/`edges` so they never pollute the
    * persistent, accumulated conversation graph or get inherited next turn.
@@ -131,7 +131,7 @@ export interface ConversationState {
   /**
    * The backend's unified id-keyed entity registry (state_doc.entities),
    * populated on hydrate and refreshed after each completed turn. Feeds the
-   * composer autocomplete corpus and the entity detail panel — entities that
+   * composer autocomplete corpus and the entity detail panel. Entities that
    * surfaced through tools (search leads, sanctions hits) live here even when
    * they never landed on the evidence graph.
    */
@@ -352,7 +352,7 @@ export function reduce(state: ConversationState, action: Action): ConversationSt
             action.clientId
           ),
         ],
-        // The new turn is the live head now — clear the selection so the
+        // The new turn is the live head now, so clear the selection so the
         // graph returns to live mode and streaming renders normally.
         activeTurnId: null,
         // Pins are consumed by the turn; clear so they don't leak forward.
@@ -370,7 +370,7 @@ export function reduce(state: ConversationState, action: Action): ConversationSt
                 index: action.turnIndex,
                 turnId: action.turnId,
                 // The server resolves the actual parent (the current head
-                // when we omitted one) — store its answer, not our request.
+                // when we omitted one), store its answer, not our request.
                 parentTurnId: action.parentTurnId,
               }
             : t
@@ -497,7 +497,7 @@ type TurnRoute = { turnId?: string; turnIndex?: number };
 
 /**
  * Immutably update the turn an event belongs to. Routing precedence:
- * `turn_id` (stage 2a — branch-safe, every SSE event carries it), then
+ * `turn_id` (stage 2a, branch-safe, every SSE event carries it), then
  * `turn_index` (legacy linear), then the last turn.
  */
 function patchTurn(turns: Turn[], route: TurnRoute, fn: (t: Turn) => Turn): Turn[] {
@@ -549,8 +549,8 @@ function applyEvent(state: ConversationState, evt: StreamEvent): ConversationSta
       };
 
     case "tool_call_start":
-      // Upsert by call_id. The same tool call can surface more than once —
-      // a replayed event after an SSE reconnect, or a backend re-emit — and
+      // Upsert by call_id. The same tool call can surface more than once
+      // (a replayed event after an SSE reconnect, or a backend re-emit), and
       // appending blindly would put two entries with the same `callId` in the
       // list, producing duplicate React keys. Merge into the existing entry
       // (preserving any result already attached) instead of pushing.
@@ -748,7 +748,7 @@ function hydrate(state: ConversationState, p: ConversationHydrate): Conversation
     ...initialState(),
     conversationId: p.conversation_id,
     // A hydrated "running" state has no live stream to re-attach, so treat it
-    // as done — otherwise the composer would be locked forever.
+    // as done, otherwise the composer would be locked forever.
     status: "done",
     turns,
     nodes,

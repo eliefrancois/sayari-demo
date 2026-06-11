@@ -9,7 +9,7 @@ import { Markdown } from "@/components/ui/markdown";
 import { ClaimSourceChip } from "./ClaimSourceChip";
 import { cn } from "@/lib/utils";
 
-/* Confidence stays grayscale — color is reserved for risk severity and
+/* Confidence stays grayscale. Color is reserved for risk severity and
  * source provenance (spec §2). */
 const CONFIDENCE_DOT = {
   high: "bg-foreground",
@@ -18,7 +18,7 @@ const CONFIDENCE_DOT = {
 } as const;
 
 /**
- * Renders a TurnAnswer — the lighter terminator for CLARIFY / FOLLOW-UP turns.
+ * Renders a TurnAnswer, the lighter terminator for CLARIFY / FOLLOW-UP turns.
  * Rendered INLINE inside the turn's lmcanvas card (no own border); the formal
  * RiskSummaryCard stays a visually distinct standalone card.
  */
@@ -188,7 +188,7 @@ function ClaimRow({
   const allNodeIds = claim.source_refs
     .map((r) => r.node_id)
     .filter((id): id is string => !!id);
-  // Only ids actually on the evidence graph count — a claim whose refs all
+  // Only ids actually on the evidence graph count. A claim whose refs all
   // point at off-graph ICIJ nodes would otherwise advertise a click that
   // highlights nothing.
   const nodeIds = nodesById

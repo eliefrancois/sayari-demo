@@ -612,7 +612,7 @@ SUBMIT_SUMMARY_TOOL = {
 }
 
 
-# The "submit_answer" tool — terminator for CLARIFY and FOLLOW-UP turns.
+# The "submit_answer" tool: terminator for CLARIFY and FOLLOW-UP turns.
 # Lighter than submit_summary; the agent uses it for conversational replies,
 # clarification questions, and narrow follow-ups that don't warrant a full memo.
 SUBMIT_ANSWER_TOOL = {

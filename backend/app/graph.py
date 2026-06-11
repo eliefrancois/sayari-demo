@@ -68,7 +68,7 @@ LIMIT $limit
 """
 
 # 1-hop neighborhood. The `-[r]-` (no arrow) matches both directions, which is
-# what we want — we don't care if Officer→Entity or Entity←Officer, we want
+# what we want: we don't care if Officer→Entity or Entity←Officer, we want
 # both sides surfaced.
 _GET_NEIGHBORHOOD = """
 MATCH (n) WHERE elementId(n) = $node_id
@@ -119,7 +119,7 @@ LIMIT $limit
 
 # Explicit ER relationships introduced in the newer ICIJ dump. We restrict to
 # CROSS-leak matches (different sourceID) because that's the interesting signal
-# — same-leak ER edges are usually data-cleaning artifacts.
+# because same-leak ER edges are usually data-cleaning artifacts.
 _FIND_ER_LINKS = """
 MATCH (n) WHERE elementId(n) = $node_id
 MATCH (n)-[r:probably_same_officer_as|same_id_as|same_as|same_company_as|same_name_as|same_intermediary_as]-(other)
@@ -156,7 +156,7 @@ def _pick_label(labels: list[str]) -> str:
 
 
 def _stringify_props(props: dict[str, Any]) -> dict[str, Any]:
-    """Neo4j can return DateTime, Date, etc. — coerce non-JSON-safe values to str.
+    """Neo4j can return DateTime, Date, etc. Coerce non-JSON-safe values to str.
 
     Keeps the GraphNode.properties dict safe to ship over SSE as JSON.
     """
@@ -189,7 +189,7 @@ def _node_from_props(node_id: str, labels: list[str], props: dict[str, Any]) -> 
 def search_entity(query: str, limit: int = 10) -> SearchResults:
     """Full-text fuzzy search across Entity/Officer/Intermediary/Address.
 
-    This is the agent's entry point — every investigation starts here. The
+    This is the agent's entry point, every investigation starts here. The
     'search' full-text index ships pre-built with the ICIJ dump and is the
     only reason this is fast on 2M nodes.
 
@@ -199,12 +199,12 @@ def search_entity(query: str, limit: int = 10) -> SearchResults:
       - <4   weak match (likely unrelated, just shares common tokens)
 
     We deliberately do NOT filter by score here. The agent layer reasons
-    about whether the matches actually answer the user's query — that's
+    about whether the matches actually answer the user's query, that's
     the AI judgment call we want to keep in the LLM, not bury in the tool.
     """
     nodes: list[GraphNode] = []
     with get_driver().session() as s:
-        # Pass params as a dict (not kwargs) — `query` is also the name of
+        # Pass params as a dict (not kwargs); `query` is also the name of
         # the first positional arg of Session.run, which would collide.
         for rec in s.run(_SEARCH_ENTITY, {"query": query, "limit": limit}):
             nodes.append(_node_from_props(rec["id"], rec["labels"], rec["props"]))
@@ -316,7 +316,7 @@ def find_er_links(node_id: str, limit: int = 20) -> Neighborhood:
       - same_name_as → medium
       - same_intermediary_as → niche
 
-    Empty result for many nodes — these edges exist for ~0.01% of the graph.
+    Empty result for many nodes; these edges exist for ~0.01% of the graph.
     That's expected; absence is informative ("ICIJ has not flagged this node
     as cross-referenced").
     """
