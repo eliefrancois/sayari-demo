@@ -121,7 +121,7 @@ class TurnState(TypedDict):
 # --- Model + graph singletons ---------------------------------------------
 # Per-request model selection: the base client is cached per model id and the
 # tool-bound client per (model, tool-subset), so requests on different models
-# (e.g. an eval comparing Sonnet 4.5 / Haiku 4.5 / Sonnet 3.7) reuse their own
+# (e.g. an eval comparing Sonnet 4.5 / Haiku 4.5) reuse their own
 # singletons without rebuilding the binding every node call.
 
 _LLM_CACHE: dict[str, Any] = {}

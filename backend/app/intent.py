@@ -36,6 +36,24 @@ log = logging.getLogger("erre.intent")
 # Unioned into every non-meta subset right after the table below.
 _CORROBORATION_TOOLS = ["check_sanctions", "search_entity"]
 
+# Document-level provenance is a natural follow-on to ANY turn that profiles a
+# concrete subject ("...then fetch the underlying source record"): the slimmed
+# profile/summary surfaces a `record_id` the agent passes to sayari_record. If a
+# confident classification narrows to a profile-style intent that doesn't bind
+# sayari_record, the agent physically cannot fetch the record its own prompt
+# tells it to (the same stranding bug as the corroboration set). So sayari_record
+# is unioned into every intent that resolves+profiles a subject (below). Lead-gen
+# (broad_search) and the meta intents are excluded — the former has no profiled
+# subject yet, the latter already bind the full toolset.
+_RECORD_PROVENANCE_TOOLS = ["sayari_record"]
+_RECORD_CAPABLE_INTENTS = {
+    "identify_entity",
+    "profile_entity",
+    "ownership_network",
+    "sanctions_screening",
+    "trade_supply_chain",
+}
+
 # The bounded intent taxonomy. Each maps to the INVESTIGATION tools worth binding
 # for that turn (terminators are added separately and always available). The two
 # "meta" intents (conversational_followup, out_of_scope) bind the full toolset —
@@ -99,6 +117,14 @@ for _tools in _INTENT_TOOLS.values():
     if _tools:
         _tools.extend(t for t in _CORROBORATION_TOOLS if t not in _tools)
 
+# Union the record-provenance tool into every subject-profiling intent so a
+# "profile X, then fetch its source record" ask can't be stranded by a confident
+# classification onto a subset that lacks sayari_record (provenance already has it).
+for _intent in _RECORD_CAPABLE_INTENTS:
+    _tools = _INTENT_TOOLS.get(_intent)
+    if _tools:
+        _tools.extend(t for t in _RECORD_PROVENANCE_TOOLS if t not in _tools)
+
 _INTENTS = list(_INTENT_TOOLS.keys())
 
 # Below this confidence we don't trust the label enough to narrow tools — fall
@@ -115,7 +141,9 @@ _GUIDANCE: dict[str, str] = {
     "profile_entity": (
         "Profile turn: resolve then sayari_profile the PRIMARY subject; use "
         "sayari_summary for any secondary entity; corroborate with check_sanctions "
-        "(direct listing) and search_entity (ICIJ leak provenance)."
+        "(direct listing) and search_entity (ICIJ leak provenance). If the user also "
+        "asks for the underlying/source record, pass the profile's record_id to "
+        "sayari_record for document-level provenance."
     ),
     "ownership_network": (
         "Ownership/network turn: after resolving + profiling, sayari_ownership "

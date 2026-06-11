@@ -84,6 +84,42 @@ def relabel_identifiers(identifiers: list[Any]) -> list[Any]:
     return out
 
 
+def _best_record_id(entity: dict[str, Any]) -> str | None:
+    """A FETCHABLE Sayari source-record id (the `<source>/<doc>/<ts>` form that
+    record.get_record expects) the agent can hand to sayari_record for document-
+    level provenance.
+
+    The entity's top-level `reference_id` is NOT usable: it carries a trailing
+    `:<hash>` composite suffix the record API rejects. The clean record ids live
+    on the `referenced_by` source records (a full profile) and on each
+    `attributes.*.data[].record` entry (present on both profile and the lighter
+    summary). Prefer those; fall back to `reference_id` with the `:<hash>` stripped
+    so we always surface something fetchable when records exist. None when the
+    entity carries no record reference at all."""
+    # 1) referenced_by: explicit source records that cite this entity.
+    ref_by = entity.get("referenced_by") or {}
+    for item in (ref_by.get("data") or []) if isinstance(ref_by, dict) else []:
+        rec = (item or {}).get("record") or {}
+        rid = rec.get("id") if isinstance(rec, dict) else None
+        if rid:
+            return rid
+    # 2) attribute-backed records (works for entity_summary too).
+    attrs = entity.get("attributes") or {}
+    if isinstance(attrs, dict):
+        for info in attrs.values():
+            for d in ((info or {}).get("data") or []) if isinstance(info, dict) else []:
+                recs = (d or {}).get("record") or []
+                if isinstance(recs, list) and recs:
+                    return recs[0]
+                if isinstance(recs, str) and recs:
+                    return recs
+    # 3) fallback: reference_id without the ':<hash>' composite suffix.
+    ref = entity.get("reference_id")
+    if isinstance(ref, str) and ref:
+        return ref.split(":", 1)[0]
+    return None
+
+
 def slim_sayari_profile(entity: dict[str, Any], *, top_n_derived: int = 8) -> dict[str, Any]:
     """Compress a raw Sayari EntityDetails dict into a token-budget-safe shape
     for the model.
@@ -153,10 +189,11 @@ def slim_sayari_profile(entity: dict[str, Any], *, top_n_derived: int = 8) -> di
         "label": entity.get("label"),
         "translated_label": entity.get("translated_label"),
         "type": entity.get("type"),
-        # A source record id (Sayari `reference_id`) the agent can hand to
-        # sayari_record for document-level provenance. None when the entity has no
-        # single canonical record reference.
-        "record_id": entity.get("reference_id"),
+        # A FETCHABLE source-record id the agent can hand to sayari_record for
+        # document-level provenance (see _best_record_id — the raw `reference_id`
+        # carries a ':<hash>' suffix the record API rejects). None when the entity
+        # carries no record reference at all.
+        "record_id": _best_record_id(entity),
         "sanctioned": entity.get("sanctioned"),
         "pep": entity.get("pep"),
         "psa_count": entity.get("psa_count"),
@@ -216,7 +253,9 @@ MODEL = DEFAULT_MODEL
 ALLOWED_MODELS: frozenset[str] = frozenset({
     "claude-sonnet-4-5-20250929",  # Sonnet 4.5 (default; the reproducible snapshot)
     "claude-haiku-4-5-20251001",   # Haiku 4.5 (fast/cheap)
-    "claude-3-7-sonnet-20250219",  # Sonnet 3.7 (prior-generation Sonnet)
+    # NOTE: claude-3-7-sonnet-20250219 was removed — it 404s on this Anthropic
+    # account, so advertising it just lets a request select a broken option. A
+    # request that names it now falls back cleanly to DEFAULT_MODEL.
 })
 
 

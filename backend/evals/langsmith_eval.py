@@ -85,7 +85,6 @@ def _model_tag(model_id: str) -> str:
     each model's run shows up as a clearly-named experiment under the dataset:
       claude-sonnet-4-5-20250929 -> sonnet-4-5
       claude-haiku-4-5-20251001  -> haiku-4-5
-      claude-3-7-sonnet-20250219 -> sonnet-3-7
     Drops the `claude` prefix and the trailing YYYYMMDD snapshot, then orders the
     family word ahead of its version numbers regardless of source ordering."""
     parts = [p for p in model_id.split("-") if p != "claude"]
