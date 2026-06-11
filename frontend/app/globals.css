@@ -199,36 +199,6 @@ pre,
   );
 }
 
-/* ───────────────── semantic branch labels (lmcanvas GroupSummaryOverlay) ──
-   Restyled from the donor's saturated rgba palette to a single neutral OKLCH
-   treatment built on this app's tokens. Color stays reserved for the evidence
-   graph's source/risk semantics, so branch regions read as quiet hairline
-   boxes with a font-mono uppercase caption. The font-family lock keeps the
-   labels on Geist Mono regardless of inherited canvas styles. */
-
-.group-summary-overlay {
-  font-family:
-    var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco,
-    Consolas, monospace;
-}
-
-.group-summary-region {
-  border: 1px solid color-mix(in oklab, var(--foreground) 16%, transparent);
-  border-radius: 10px;
-  background-color: color-mix(in oklab, var(--foreground) 3%, transparent);
-}
-
-.group-summary-label {
-  font-family:
-    var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco,
-    Consolas, monospace;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  line-height: 1.05;
-  color: var(--muted-foreground);
-}
-
 /* ───────────────── motion primitives (lmcanvas timings) ── */
 
 @keyframes caret-pulse {

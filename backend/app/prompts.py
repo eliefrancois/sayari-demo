@@ -51,7 +51,12 @@ There is no longer a hard "ICIJ first" rule. Route by the question:
 2. Call sayari_profile on the chosen entity_id (the PRIMARY subject) for risk factors
    (already slimmed) and flags. Surface the headline direct factors and the most relevant
    derived factors (with their traversal paths) into sayari_risk_factors. Treat psa_*
-   factors as lower-confidence leads, not hard hits.
+   factors as lower-confidence leads, not hard hits. sayari_profile ALSO returns an
+   `officers` list (named directors/officers/managers from the entity's has_officer /
+   director relationships, each with positions) plus those individuals as Officer nodes on
+   the graph. When the user asks who the officers, directors, or managers are, read that
+   `officers` list directly; do NOT say officer names are unavailable. (Ownership traversal
+   does NOT carry officers, so for officer questions use sayari_profile, not sayari_ownership.)
 3. If ownership/control matters, call sayari_ownership (direction='ubo' for "who owns it",
    'downstream' for "what it owns"). For sanctions/PEP EXPOSURE (a clean subject with a
    risky owner/subsidiary/officer), use sayari_watchlist — it surfaces INDIRECT exposure

@@ -60,9 +60,6 @@ import {
   type DraftFlowNode,
   type TurnFlowNode,
 } from "./TurnNode";
-import { GroupSummaryOverlay } from "./GroupSummaryOverlay";
-import { buildTurnGroupSummaries } from "@/lib/groupClustering";
-import type { GroupSummary } from "@/lib/groupSummary";
 
 type CanvasFlowNode = TurnFlowNode | DraftFlowNode;
 
@@ -420,29 +417,6 @@ function InvestigationCanvasInner({
     return edges;
   }, [rfNodes, state.turns, draft, activePathCanvasIds]);
 
-  /* ── semantic branch labels (donor: lmcanvas GroupSummaryOverlay) ──────── */
-
-  // One label per placed turn, titled from the user message (not Jaccard clusters).
-  const groupSummaries = useMemo<GroupSummary[]>(() => {
-    const candidates = state.turns
-      .filter((t) => positions.has(canvasIdOf(t)))
-      .map((t) => ({ nodeId: canvasIdOf(t), prompt: t.userMessage }))
-      .filter((c) => c.prompt.trim().length > 0);
-    if (candidates.length === 0) return [];
-    return buildTurnGroupSummaries(candidates).map((g) => ({
-      id: g.nodeIds[0] ?? g.title,
-      title: g.title,
-      nodeIds: g.nodeIds,
-    }));
-  }, [state.turns, positions]);
-
-  // The overlay measures node rects; feed it only the turn nodes (never the
-  // transient draft card).
-  const overlayNodes = useMemo(
-    () => rfNodes.filter((n) => n.type === "turn"),
-    [rfNodes]
-  );
-
   /* ── interaction handlers ──────────────────────────────────────────────── */
 
   const onNodesChange = useCallback(
@@ -640,7 +614,6 @@ function InvestigationCanvasInner({
               size={1}
               color="var(--grid-line)"
             />
-            <GroupSummaryOverlay summaries={groupSummaries} nodes={overlayNodes} />
           </ReactFlow>
 
           {/* Radial vignette fading the grid toward the pane edges */}

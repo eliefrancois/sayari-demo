@@ -20,7 +20,7 @@ Open `http://localhost:3000`. Point `NEXT_PUBLIC_BACKEND_URL` at your local back
 - `components/`: the cards and panels, answer card, risk summary, entity detail, evidence graph, trade-routes map.
 - `components/manager/`: the conversation history menu (list, search, delete).
 - `components/ui/`: shadcn and prompt-kit primitives.
-- `lib/`: the non-UI logic. `sse-client.ts` (SSE consumption), `conversation-store.ts` (state), `canvas-layout.ts` and `groupClustering.ts` (graph layout and subject grouping), `report-pdf.ts` (PDF export), `types.ts`.
+- `lib/`: the non-UI logic. `sse-client.ts` (SSE consumption), `conversation-store.ts` (state), `canvas-layout.ts` (graph layout), `report-pdf.ts` (PDF export), `types.ts`.
 
 ## Env vars
 
