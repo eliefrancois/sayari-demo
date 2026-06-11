@@ -1141,14 +1141,24 @@ def shortest_path_to_neighborhood(
             _add_edge(edge_map, last_id, tid, last_field)
         nb.edges = list(edge_map.values())
     if id_lookup:
-        # Name any hop/target node the raw result left anonymous from entities
-        # already seen this conversation (richer in-hand data wins, so a real
-        # label is never overwritten by a placeholder).
+        # Name (and re-label) any hop/target node the raw result left anonymous
+        # or generically typed, from entities already seen this conversation
+        # (richer in-hand data wins, so a real label is never overwritten by a
+        # placeholder).
         for nid, node in nodes.items():
-            named = (id_lookup.get(nid) or {}).get("label")
+            info = id_lookup.get(nid) or {}
+            named = info.get("label")
             if named and (not node.name or node.name == "(unnamed)"
                           or node.name == f"…{nid[-6:]}"):
                 node.name = named
+            # A hop that arrived without a usable `type` defaults to the "Other"
+            # label; when the known entity carries a type/label, coerce a
+            # specific label so a known person/company (e.g. an intermediary we
+            # already resolved) doesn't keep rendering as "Other".
+            if node.label == "Other" and info.get("type"):
+                coerced = _coerce_label(info.get("type"))
+                if coerced != "Other":
+                    node.label = coerced  # type: ignore[assignment]
     nb.nodes = list(nodes.values())
     nb.metadata["kind"] = "shortest_path"
     nb.metadata["target_id"] = tid

@@ -38,6 +38,7 @@ import time
 from typing import Any, Callable
 
 from app import agent_graph
+from app.agent_common import ALLOWED_MODELS, DEFAULT_MODEL
 from evals import branching, multiturn
 
 # An evaluator takes the evaluate_turn output and returns (passed, comment).
@@ -1034,7 +1035,7 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
                    "sanctioned": False, "pep": False, "countries": ["RUS"]},
         "path": [
             {"field": "shareholder_of",
-             "entity": {"id": "kerimov", "type": "person"}},  # NO label from API
+             "entity": {"id": "kerimov"}},  # NO label AND NO type from API
         ],
     }]}
     nb_named = sayari.shortest_path_to_neighborhood(
@@ -1043,6 +1044,10 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     )
     named_node = next((n for n in nb_named.nodes if n.id == "kerimov"), None)
     named_ok = named_node is not None and named_node.name == "Suleiman Kerimov"
+    # The hop arrives with NO type, so it would default to the "Other" label;
+    # the conversation-known type ("person") must upgrade it to "Officer" — a
+    # known intermediary must not render as "Other" when its type is known.
+    named_label_ok = named_node is not None and named_node.label == "Officer"
 
     # Phase 1 regression: subject-membership attribution + union. A shortest_path
     # turn tags the source to subject A only, the target to subject B only, and
@@ -1098,6 +1103,8 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
          f"edges={sorted(sp_edges)}"),
         (case, "shortest_path_intermediate_named", named_ok,
          f"kerimov_name={named_node.name if named_node else None}"),
+        (case, "shortest_path_intermediate_label", named_label_ok,
+         f"kerimov_label={named_node.label if named_node else None}"),
         (case, "shortest_path_subject_attribution", tag_ok,
          f"subjects={[n['subject_ids'] for n in sp_nodes]}"),
         (case, "shared_node_subject_ids_union", union_ok,
@@ -1252,8 +1259,16 @@ async def _episodic_enabled_mock_rows() -> list[tuple[str, str, bool, str]]:
     ]
 
 
-async def _run_local() -> int:
-    print(f"Running {len(CASES)} eval cases against agent_graph (live)...\n")
+async def _run_local(
+    model: str | None = None, deterministic_only: bool = False
+) -> int:
+    if deterministic_only:
+        print("Running DETERMINISTIC checks only (no live LLM, no API spend)...\n")
+    else:
+        print(
+            f"Running {len(CASES)} eval cases against agent_graph (live)"
+            f"{f' [model={model}]' if model else ''}...\n"
+        )
     total = 0
     passed = 0
     rows: list[tuple[str, str, bool, str]] = []
@@ -1307,10 +1322,21 @@ async def _run_local() -> int:
             rows.append((nm, "deterministic_check", False, f"crashed: {e}"))
             total += 1
 
+    if deterministic_only:
+        print("\n" + "=" * 78)
+        print(f"{'CASE':<30}{'CHECK':<24}{'RESULT':<8}COMMENT")
+        print("-" * 78)
+        for name, check, ok, comment in rows:
+            mark = "PASS" if ok else "FAIL"
+            print(f"{name:<30}{check:<24}{mark:<8}{comment}")
+        print("=" * 78)
+        print(f"\n{passed}/{total} deterministic checks passed.")
+        return 0 if passed == total else 1
+
     for case in CASES:
         t0 = time.perf_counter()
         try:
-            out = await agent_graph.evaluate_turn(case["input"])
+            out = await agent_graph.evaluate_turn(case["input"], model=model)
         except Exception as e:  # a crash is a failure of every check
             for check in case["checks"]:
                 rows.append((case["name"], check, False, f"agent crashed: {e}"))
@@ -1367,15 +1393,16 @@ def _ensure_dataset() -> Any:
     return ds
 
 
-async def _run_langsmith() -> int:
+async def _run_langsmith(model: str | None = None) -> int:
     """Upload the same cases + evaluators to LangSmith as an experiment."""
     from langsmith import aevaluate  # imported lazily; only needed with --push
 
     ds = _ensure_dataset()
-    print(f"Dataset ready: {_DATASET_NAME} ({len(CASES)} examples)")
+    print(f"Dataset ready: {_DATASET_NAME} ({len(CASES)} examples)"
+          f"{f' [model={model}]' if model else ''}")
 
     async def target(inputs: dict[str, Any]) -> dict[str, Any]:
-        return await agent_graph.evaluate_turn(inputs["input"])
+        return await agent_graph.evaluate_turn(inputs["input"], model=model)
 
     def make_ls_evaluator(check: str):
         fn = EVALUATORS[check]
@@ -1416,7 +1443,29 @@ def main() -> None:
         action="store_true",
         help="Also upload to LangSmith (requires LANGCHAIN_API_KEY).",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Main-agent model for the live cases (allowlisted; off-list falls "
+            "back to the default Sonnet 4.5). One of: "
+            + ", ".join(sorted(ALLOWED_MODELS))
+        ),
+    )
+    parser.add_argument(
+        "--deterministic-only",
+        action="store_true",
+        help="Run only the deterministic checks (no live LLM, no API spend).",
+    )
     args = parser.parse_args()
+
+    if args.model is not None and args.model not in ALLOWED_MODELS:
+        print(
+            f"warning: --model {args.model!r} is not allowlisted; the run will "
+            f"fall back to the default ({DEFAULT_MODEL}). Allowed: "
+            + ", ".join(sorted(ALLOWED_MODELS))
+        )
+
     # Activate LangSmith tracing if configured, so even a local run produces
     # trace trees in the LangSmith UI (and --push can upload an experiment).
     from app.config import apply_langsmith_env, get_settings
@@ -1427,9 +1476,11 @@ def main() -> None:
         if not tracing_on:
             print("LANGCHAIN_TRACING_V2 + LANGCHAIN_API_KEY not set; cannot --push.")
             sys.exit(2)
-        asyncio.run(_run_langsmith())
+        asyncio.run(_run_langsmith(model=args.model))
     else:
-        sys.exit(asyncio.run(_run_local()))
+        sys.exit(asyncio.run(_run_local(
+            model=args.model, deterministic_only=args.deterministic_only
+        )))
 
 
 if __name__ == "__main__":

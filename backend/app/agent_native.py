@@ -31,9 +31,12 @@ from app.agent_common import (
     build_context_block,
     build_sanctions_review,
     build_turn_message,
+    cache_last_tool,
+    cached_system,
     digest_answer,
     digest_summary,
     graph_payload,
+    resolve_model,
     short_summary,
     slim_result_for_model,
 )
@@ -89,7 +92,12 @@ async def run_investigation(session_id: str, user_query: str) -> None:
 
     client = _client()
     # The full tool list passed to Claude: 6 investigation tools + 1 terminator.
-    all_tools = TOOLS + [SUBMIT_SUMMARY_TOOL]
+    # cache_last_tool adds an ephemeral cache breakpoint on the last tool so the
+    # whole (stable) tool-definitions block is cached across iterations.
+    all_tools = cache_last_tool(TOOLS + [SUBMIT_SUMMARY_TOOL])
+    # System prompt as a cached block (breakpoint at its end) — cached alongside
+    # the tools so the large, stable prefix isn't re-billed every iteration.
+    system_blocks = cached_system(SYSTEM_PROMPT)
 
     # The conversation buffer. Each turn we send the entire array and get back
     # an assistant turn that we append. Tool results go back as user-role
@@ -115,7 +123,7 @@ async def run_investigation(session_id: str, user_query: str) -> None:
                 resp = await client.messages.create(
                     model=MODEL,
                     max_tokens=MAX_TOKENS_PER_TURN,
-                    system=SYSTEM_PROMPT,
+                    system=system_blocks,
                     tools=all_tools,
                     messages=messages,
                 )
@@ -327,10 +335,15 @@ async def run_turn(
     turn_index: int,
     pinned_node_ids: list[str] | None = None,
     force_risk_report: bool = False,
+    model: str | None = None,
 ) -> None:
     """Run one conversation turn. Output is the SSE event stream persisted under
-    the conversation, plus updated summaries/answers/graph/context in Redis."""
+    the conversation, plus updated summaries/answers/graph/context in Redis.
+
+    `model` optionally selects the main-agent model per request (allowlisted via
+    resolve_model; None = default Sonnet 4.5)."""
     pinned_node_ids = pinned_node_ids or []
+    model_id = resolve_model(model)
     await conversations.set_state(conversation_id, "running")
     await _emit_conv(conversation_id, turn_index, "agent_started", input=user_message)
     tracing.log_event(
@@ -359,7 +372,14 @@ async def run_turn(
     investigation_tools = [
         t for t in TOOLS if selected_names is None or t["name"] in selected_names
     ]
-    all_tools = investigation_tools + [SUBMIT_SUMMARY_TOOL, SUBMIT_ANSWER_TOOL]
+    # Cache the (stable) tool-definitions block via a breakpoint on the last
+    # tool, and the system prompt via a breakpoint at its end. The dynamic
+    # per-turn context lives in the user message AFTER this prefix, so the cache
+    # stays warm across iterations within the turn.
+    all_tools = cache_last_tool(
+        investigation_tools + [SUBMIT_SUMMARY_TOOL, SUBMIT_ANSWER_TOOL]
+    )
+    system_blocks = cached_system(SYSTEM_PROMPT)
     guidance = intent.build_guidance(intent_result)
     if guidance:
         context_block = f"{context_block}\n{guidance}\n"
@@ -383,13 +403,13 @@ async def run_turn(
                 conversation_id=conversation_id,
                 turn=turn_index,
                 iteration=iteration,
-                model=MODEL,
+                model=model_id,
                 message_count=len(messages),
             ) as sp:
                 resp = await client.messages.create(
-                    model=MODEL,
+                    model=model_id,
                     max_tokens=MAX_TOKENS_PER_TURN,
-                    system=SYSTEM_PROMPT,
+                    system=system_blocks,
                     tools=all_tools,
                     messages=messages,
                 )

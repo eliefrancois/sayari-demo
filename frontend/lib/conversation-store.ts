@@ -217,9 +217,18 @@ export function mergeGraphNode(prev: GraphNode | undefined, next: GraphNode): Gr
   for (const sid of [...(prev.subject_ids ?? []), ...(next.subject_ids ?? [])]) {
     if (sid && !subjectIds.includes(sid)) subjectIds.push(sid);
   }
+  // Don't let a generic "Other" label clobber a more specific one: prefer a
+  // specific label from EITHER side (mirrors the backend _merge_node guard), so
+  // a node first seen as "Officer"/"Entity" isn't downgraded to "Other" by a
+  // later, less-typed event on the wire.
+  const label =
+    next.label === "Other" && prev.label && prev.label !== "Other"
+      ? prev.label
+      : next.label ?? prev.label;
   return {
     ...prev,
     ...next,
+    label,
     subject_ids: subjectIds,
     introduced_turn_id: prev.introduced_turn_id ?? next.introduced_turn_id ?? null,
   };

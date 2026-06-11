@@ -47,16 +47,17 @@ from pydantic import ValidationError
 from app import conversations, episodic, intent, sanctions, tracing
 from app.agent_common import (
     MAX_TOKENS_PER_TURN,
-    MODEL,
     bound_context_digest,
     budget_nudge,
     build_context_block,
     build_followup_prefetch,
     build_sanctions_review,
     build_turn_message,
+    cached_system,
     digest_answer,
     digest_summary,
     graph_payload,
+    resolve_model,
     short_summary,
     slim_result_for_model,
 )
@@ -96,6 +97,9 @@ class TurnState(TypedDict):
     user_message: str
     prior_context: str
     persist: bool  # True for live turns (emit SSE + write Redis); False for evals
+    # Per-request main-agent model (allowlisted via resolve_model). None = the
+    # default Sonnet 4.5. Threaded from the API request / eval --model flag.
+    model: str | None
     # Intent-router's selected investigation-tool subset (None = full toolset).
     tool_names: list[str] | None
     # Intent label from the router (for the state_doc turn_log). None on fallback.
@@ -115,17 +119,21 @@ class TurnState(TypedDict):
 
 
 # --- Model + graph singletons ---------------------------------------------
+# Per-request model selection: the base client is cached per model id and the
+# tool-bound client per (model, tool-subset), so requests on different models
+# (e.g. an eval comparing Sonnet 4.5 / Haiku 4.5 / Sonnet 3.7) reuse their own
+# singletons without rebuilding the binding every node call.
 
-_LLM: Any = None
-_BOUND_CACHE: dict[Any, Any] = {}
+_LLM_CACHE: dict[str, Any] = {}
+_BOUND_CACHE: dict[tuple[str, Any], Any] = {}
 _COMPILED: Any = None
 
 
-def _base_llm():
-    global _LLM
-    if _LLM is None:
-        _LLM = ChatAnthropic(
-            model=MODEL,
+def _base_llm(model: str):
+    llm = _LLM_CACHE.get(model)
+    if llm is None:
+        llm = ChatAnthropic(
+            model=model,
             max_tokens=MAX_TOKENS_PER_TURN,
             api_key=get_settings().anthropic_api_key,
             timeout=120,
@@ -134,17 +142,21 @@ def _base_llm():
             # the turn. Bumped above the default 2 for long investigations.
             max_retries=6,
         )
-    return _LLM
+        _LLM_CACHE[model] = llm
+    return llm
 
 
-def _bound_llm(tool_names: list[str] | None = None):
+def _bound_llm(tool_names: list[str] | None = None, model: str | None = None):
     """The model bound to the turn's tool subset (intent-router narrowed), or the
-    full toolset when tool_names is None. Cached per distinct subset so we don't
-    rebuild the binding every node call."""
-    key = frozenset(tool_names) if tool_names else None
+    full toolset when tool_names is None, on the resolved (allowlisted) model.
+    Cached per (model, subset). The bound tool block carries an ephemeral cache
+    breakpoint (cache=True) so the tool definitions are cached across turns."""
+    resolved = resolve_model(model)
+    subset_key = frozenset(tool_names) if tool_names else None
+    key = (resolved, subset_key)
     if key not in _BOUND_CACHE:
-        _BOUND_CACHE[key] = _base_llm().bind_tools(
-            tools_for(set(tool_names) if tool_names else None)
+        _BOUND_CACHE[key] = _base_llm(resolved).bind_tools(
+            tools_for(set(tool_names) if tool_names else None, cache=True)
         )
     return _BOUND_CACHE[key]
 
@@ -254,10 +266,11 @@ async def agent_node(state: TurnState) -> dict[str, Any]:
     cid = state["conversation_id"]
     ti = state["turn_index"]
     stream = state["persist"] and get_settings().stream_tokens
-    llm = _bound_llm(state.get("tool_names"))
+    model = resolve_model(state.get("model"))
+    llm = _bound_llm(state.get("tool_names"), model)
 
     with tracing.span(
-        "llm_call", conversation_id=cid, turn=ti, model=MODEL,
+        "llm_call", conversation_id=cid, turn=ti, model=model,
         message_count=len(state["messages"]),
     ) as sp:
         if not stream:
@@ -967,10 +980,13 @@ def _initial_state(
     pinned_node_ids: list[str] | None = None,
     turn_id: str | None = None,
     parent_turn_id: str | None = None,
+    model: str | None = None,
 ) -> TurnState:
     return {
         "messages": [
-            SystemMessage(content=SYSTEM_PROMPT),
+            # System prompt as a cached text block: an ephemeral cache breakpoint
+            # at its end caches the (large, stable) system prefix across turns.
+            SystemMessage(content=cached_system(SYSTEM_PROMPT)),
             HumanMessage(content=build_turn_message(context_block, user_message, turn_index)),
         ],
         "conversation_id": conversation_id,
@@ -980,6 +996,7 @@ def _initial_state(
         "user_message": user_message,
         "prior_context": prior_context,
         "persist": persist,
+        "model": model,
         "tool_names": tool_names,
         "intent": intent,
         "pinned_node_ids": pinned_node_ids or [],
@@ -1036,9 +1053,13 @@ async def run_turn(
     force_risk_report: bool = False,
     turn_id: str | None = None,
     parent_turn_id: str | None = None,
+    model: str | None = None,
 ) -> None:
     """Run one conversation turn through the graph. Drop-in replacement for
     agent_native.run_turn — same SSE events and same Redis writes.
+
+    `model` optionally selects the main-agent model per request (allowlisted via
+    resolve_model; None = default Sonnet 4.5).
 
     Branching (Stage 2a): when `turn_id` is set (the API registered the turn in
     the tree), the whole turn runs inside `conversations.turn_scope`, which makes
@@ -1049,13 +1070,13 @@ async def run_turn(
     if turn_id is None:
         await _run_turn_scoped(
             conversation_id, user_message, turn_index,
-            pinned_node_ids or [], force_risk_report, None, None,
+            pinned_node_ids or [], force_risk_report, None, None, model,
         )
         return
     with conversations.turn_scope(conversation_id, turn_id, parent_turn_id):
         await _run_turn_scoped(
             conversation_id, user_message, turn_index,
-            pinned_node_ids or [], force_risk_report, turn_id, parent_turn_id,
+            pinned_node_ids or [], force_risk_report, turn_id, parent_turn_id, model,
         )
 
 
@@ -1067,6 +1088,7 @@ async def _run_turn_scoped(
     force_risk_report: bool,
     turn_id: str | None,
     parent_turn_id: str | None,
+    model: str | None = None,
 ) -> None:
     await conversations.set_state(conversation_id, "running")
     await _emit(conversation_id, turn_index, "agent_started", input=user_message)
@@ -1111,7 +1133,7 @@ async def _run_turn_scoped(
         conversation_id, turn_index, user_message, context, context_block,
         persist=True, tool_names=tool_names, intent=turn_intent,
         pinned_node_ids=pinned_node_ids,
-        turn_id=turn_id, parent_turn_id=parent_turn_id,
+        turn_id=turn_id, parent_turn_id=parent_turn_id, model=model,
     )
 
     try:
@@ -1133,11 +1155,15 @@ async def _run_turn_scoped(
 async def evaluate_turn(
     user_message: str,
     force_risk_report: bool = False,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Run a turn to completion with NO persistence and NO SSE, returning the
     structured result directly from the final graph state. This is the synergy
     of going LangGraph-first: the eval harness gets the RiskSummary/TurnAnswer
-    without parsing SSE or touching Redis."""
+    without parsing SSE or touching Redis.
+
+    `model` selects the main-agent model for the run (allowlisted; None = default
+    Sonnet 4.5) so an eval can compare model families on the same cases."""
     context_block = build_context_block(
         "", {"nodes": [], "edges": []}, [], force_risk_report, {}
     )
@@ -1147,7 +1173,7 @@ async def evaluate_turn(
     )
     state = _initial_state(
         "eval", 0, user_message, "", context_block, persist=False,
-        tool_names=tool_names, intent=turn_intent,
+        tool_names=tool_names, intent=turn_intent, model=model,
     )
     final = await _graph().ainvoke(state, config={"recursion_limit": _RECURSION_LIMIT})
 

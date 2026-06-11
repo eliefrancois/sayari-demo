@@ -872,6 +872,15 @@ def _merge_node(prev: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     turns (so a node a later turn re-attributes to a second subject keeps its
     original membership) and `introduced_turn_id` keeps the EARLIEST writer."""
     merged = {**prev, **new}
+    # Don't let a generic "Other" label clobber a more specific one: prefer a
+    # specific label from EITHER side. A node first created as "Other" (a hop
+    # that arrived without a usable type) keeps "Officer"/"Entity"/... once a
+    # later, better-typed event names it, and a later "Other" event can't
+    # downgrade an already-specific label.
+    prev_label = prev.get("label")
+    new_label = new.get("label")
+    if new_label in (None, "Other") and prev_label not in (None, "Other"):
+        merged["label"] = prev_label
     seen: list[str] = []
     for sid in (prev.get("subject_ids") or []) + (new.get("subject_ids") or []):
         if sid and sid not in seen:

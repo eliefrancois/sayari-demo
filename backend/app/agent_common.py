@@ -199,9 +199,67 @@ def slim_sayari_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# --- Model + loop constants (shared) --------------------------------------
+# --- Model selection (per-request, allowlisted) ---------------------------
+# The main-agent model is configurable per request (backend plumbing; no UI).
+# DEFAULT_MODEL is the reproducible-demo Sonnet 4.5 snapshot; MODEL is kept as a
+# backwards-compatible alias so existing `from app.agent_common import MODEL`
+# imports (and the default-model behavior) are unchanged.
+DEFAULT_MODEL = "claude-sonnet-4-5-20250929"  # dated snapshot = reproducible demo behavior
+MODEL = DEFAULT_MODEL
 
-MODEL = "claude-sonnet-4-5-20250929"  # dated snapshot = reproducible demo behavior
+# Allowlist of main-agent Claude models a request may select. Anything off this
+# list (a typo, an unsupported/expensive model, or an injection attempt on the
+# `model` param) silently falls back to DEFAULT_MODEL — an arbitrary string can
+# never reach the Anthropic API. The intent-router model is configured
+# separately (settings.intent_router_model, stays on Haiku) and is intentionally
+# NOT part of this allowlist.
+ALLOWED_MODELS: frozenset[str] = frozenset({
+    "claude-sonnet-4-5-20250929",  # Sonnet 4.5 (default; the reproducible snapshot)
+    "claude-haiku-4-5-20251001",   # Haiku 4.5 (fast/cheap)
+    "claude-3-7-sonnet-20250219",  # Sonnet 3.7 (prior-generation Sonnet)
+})
+
+
+def resolve_model(model: str | None) -> str:
+    """The main-agent model for a request: the requested one iff it's on the
+    allowlist, else DEFAULT_MODEL. Never raises — an unknown/empty value falls
+    back so a bad `model` param degrades to the default instead of erroring."""
+    if model and model in ALLOWED_MODELS:
+        return model
+    return DEFAULT_MODEL
+
+
+# --- Anthropic prompt caching ---------------------------------------------
+# Cache the two large, stable parts of every request — the system prompt and the
+# tool definitions — so they aren't re-billed / re-processed on every turn. A
+# cache breakpoint caches the exact byte prefix up to it, so the cached parts
+# must stay constant across turns; the per-turn DYNAMIC context (INVESTIGATION
+# STATE, the user message, tool results) lives AFTER them in the messages array
+# and therefore never invalidates the cached system+tools prefix.
+_CACHE_CONTROL = {"type": "ephemeral"}
+
+
+def cached_system(system_prompt: str) -> list[dict[str, Any]]:
+    """System prompt as a single text block with a cache breakpoint at its end —
+    the raw Anthropic `system=` shape. Also valid as langchain SystemMessage
+    content (ChatAnthropic preserves cache_control on text blocks)."""
+    return [{"type": "text", "text": system_prompt, "cache_control": _CACHE_CONTROL}]
+
+
+def cache_last_tool(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy of an Anthropic-format tools list with a cache breakpoint on the LAST
+    tool, which caches the entire tools block ahead of it. No-op on an empty
+    list. The terminators are always appended last and are stable, so the
+    breakpoint sits on a constant tool across turns."""
+    if not tools:
+        return tools
+    out = [dict(t) for t in tools]
+    out[-1] = {**out[-1], "cache_control": _CACHE_CONTROL}
+    return out
+
+
+# --- Loop constants (shared) ----------------------------------------------
+
 MAX_ITERATIONS = 20  # safety bail-out; real investigations finish in 6-12
 # Output ceiling per model call. A legit large RiskSummary (many claims, each with
 # source_refs + sanctions_hits + risk-factor paths) can exceed 4096 and get cut off
@@ -604,6 +662,18 @@ _MODEL_PROP_KEYS = frozenset({
 })
 
 
+# UI-only payload keys the MODEL never reasons over — they ride along in the
+# tool result purely so the frontend can render an overlay/map, and the live SSE
+# events carry them to the UI separately. Stripping them from the model copy
+# removes pure duplication (each is a re-encoding of data already in `nodes` /
+# `candidates` / `shipments`): `all_lead_nodes` is the broad-search overlay set
+# (one slim node per lead, already represented by `candidates` + `nodes`), and
+# `metadata.routes` is the trade-map's country-pair aggregation (derived from the
+# `shipments` the model already has).
+_MODEL_DROP_TOPLEVEL = ("all_lead_nodes",)
+_MODEL_DROP_METADATA = ("routes",)
+
+
 def slim_result_for_model(parsed: dict[str, Any]) -> dict[str, Any]:
     """Compact copy of a tool result for the model's message history.
 
@@ -611,8 +681,10 @@ def slim_result_for_model(parsed: dict[str, Any]) -> dict[str, Any]:
     pays for early results many times over — that quadratic token growth is what
     trips Anthropic's per-minute input-token rate limit. We keep node identity
     (id/name/label/source) plus a few reasoning-relevant properties and drop the
-    rest. The UI is unaffected: it renders from the full nodes carried on the
-    separate `tool_call_result` graph events, not from this payload.
+    rest, and we strip UI-only duplicative blobs (`all_lead_nodes`,
+    `metadata.routes`) the model never reasons over. The UI is unaffected: it
+    renders from the full nodes / overlay fields carried on the separate
+    `tool_call_result` graph events, not from this payload.
     """
     if not isinstance(parsed, dict):
         return parsed
@@ -641,6 +713,15 @@ def slim_result_for_model(parsed: dict[str, Any]) -> dict[str, Any]:
         slim_nodes.append(node)
     out = dict(parsed)
     out["nodes"] = slim_nodes
+    # Drop UI-only top-level blobs (shallow-copy `out` so `parsed` — read by the
+    # SSE event emitters — is untouched).
+    for k in _MODEL_DROP_TOPLEVEL:
+        out.pop(k, None)
+    # Trim UI-only metadata keys without mutating the shared metadata dict
+    # (rebuild a fresh dict so the SSE event's parsed.metadata still has them).
+    meta = parsed.get("metadata")
+    if isinstance(meta, dict) and any(k in meta for k in _MODEL_DROP_METADATA):
+        out["metadata"] = {k: v for k, v in meta.items() if k not in _MODEL_DROP_METADATA}
     return out
 
 

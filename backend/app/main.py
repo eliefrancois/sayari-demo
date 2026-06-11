@@ -176,6 +176,11 @@ class MessageRequest(BaseModel):
     # (the only thing the current frontend sends) = continue the current head,
     # i.e. exactly the linear behavior.
     parent_turn_id: str | None = None
+    # Optional per-request main-agent model override. Allowlisted in
+    # agent_common.resolve_model; anything off the list (or None) falls back to
+    # the default Sonnet 4.5. No UI sends this today — it exists for eval runs
+    # and API callers comparing model families.
+    model: str | None = None
 
 
 class MessageResponse(BaseModel):
@@ -288,7 +293,7 @@ async def post_message(conversation_id: str, req: MessageRequest) -> MessageResp
         _safe_run_turn(
             conversation_id, message, turn_index,
             req.pinned_node_ids or [], req.force_risk_report,
-            turn_id, parent_turn_id,
+            turn_id, parent_turn_id, req.model,
         )
     )
     return MessageResponse(
@@ -305,6 +310,7 @@ async def _safe_run_turn(
     force_risk_report: bool,
     turn_id: str | None = None,
     parent_turn_id: str | None = None,
+    model: str | None = None,
 ) -> None:
     """Run a turn, always releasing the lock and reaching a terminal state.
 
@@ -314,6 +320,7 @@ async def _safe_run_turn(
         await agent.run_turn(
             conversation_id, message, turn_index, pinned_node_ids,
             force_risk_report, turn_id=turn_id, parent_turn_id=parent_turn_id,
+            model=model,
         )
     except Exception as e:
         log.exception("background_turn_crashed", extra={"conversation_id": conversation_id})

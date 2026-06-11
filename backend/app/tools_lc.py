@@ -51,14 +51,39 @@ ALL_TOOLS_LC: list[dict[str, Any]] = INVESTIGATION_TOOLS_LC + [
 TERMINATOR_NAMES: frozenset[str] = frozenset({"submit_summary", "submit_answer"})
 
 
-def tools_for(tool_names: set[str] | None) -> list[dict[str, Any]]:
+def _anthropic_cached(tool: dict[str, Any]) -> dict[str, Any]:
+    """An OpenAI-format function tool re-expressed in ANTHROPIC-native shape with
+    an ephemeral cache breakpoint. langchain-anthropic passes a dict that already
+    has {name, description, input_schema} through verbatim (preserving
+    cache_control), whereas its OpenAI->Anthropic converter drops unknown keys —
+    so the breakpoint tool must be emitted in native form to actually cache."""
+    fn = tool["function"]
+    return {
+        "name": fn["name"],
+        "description": fn.get("description", ""),
+        "input_schema": fn["parameters"],
+        "cache_control": {"type": "ephemeral"},
+    }
+
+
+def tools_for(tool_names: set[str] | None, *, cache: bool = False) -> list[dict[str, Any]]:
     """The LangChain tool list to bind for a turn. `tool_names` is the intent
     router's selected INVESTIGATION-tool subset; the two terminators are ALWAYS
     appended so the agent can always finish. None (or empty) -> the full toolset
-    (the safe fallback for low-confidence classification)."""
+    (the safe fallback for low-confidence classification).
+
+    With cache=True the LAST tool (always a stable terminator) carries an
+    ephemeral cache breakpoint so the whole tool-definitions block is cached
+    across turns. The breakpoint tool is emitted in Anthropic-native form so
+    cache_control survives langchain-anthropic's tool conversion."""
     if not tool_names:
-        return ALL_TOOLS_LC
-    selected = [
-        t for t in INVESTIGATION_TOOLS_LC if t["function"]["name"] in tool_names
-    ]
-    return selected + [SUBMIT_SUMMARY_TOOL_LC, SUBMIT_ANSWER_TOOL_LC]
+        base = list(ALL_TOOLS_LC)
+    else:
+        selected = [
+            t for t in INVESTIGATION_TOOLS_LC if t["function"]["name"] in tool_names
+        ]
+        base = selected + [SUBMIT_SUMMARY_TOOL_LC, SUBMIT_ANSWER_TOOL_LC]
+    if not cache or not base:
+        return base
+    *head, last = base
+    return [*head, _anthropic_cached(last)]

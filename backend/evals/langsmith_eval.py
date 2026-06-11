@@ -51,6 +51,8 @@ from typing import Any, Callable
 
 from app import agent_graph, conversations
 from app.agent_common import (
+    ALLOWED_MODELS,
+    DEFAULT_MODEL,
     MAX_TOKENS_PER_TURN,
     MODEL,
     build_context_block,
@@ -71,6 +73,29 @@ _JUDGE_MODEL = MODEL
 
 # A row is (case, check, passed, comment) — the same shape run_evals prints.
 Row = tuple[str, str, bool, str]
+
+# The main-agent model for this run, set from --model in main(). None = the
+# default Sonnet 4.5. aevaluate calls `target` with only `inputs`, so the model
+# is carried here rather than as a parameter.
+_RUN_MODEL: str | None = None
+
+
+def _model_tag(model_id: str) -> str:
+    """Derive a short, stable experiment tag from a full Anthropic model id so
+    each model's run shows up as a clearly-named experiment under the dataset:
+      claude-sonnet-4-5-20250929 -> sonnet-4-5
+      claude-haiku-4-5-20251001  -> haiku-4-5
+      claude-3-7-sonnet-20250219 -> sonnet-3-7
+    Drops the `claude` prefix and the trailing YYYYMMDD snapshot, then orders the
+    family word ahead of its version numbers regardless of source ordering."""
+    parts = [p for p in model_id.split("-") if p != "claude"]
+    if parts and parts[-1].isdigit() and len(parts[-1]) == 8:
+        parts = parts[:-1]
+    family = next((p for p in parts if p in ("sonnet", "haiku", "opus")), None)
+    nums = [p for p in parts if p.isdigit()]
+    if family and nums:
+        return "-".join([family, *nums])
+    return "-".join(parts) if parts else "model"
 
 
 # --- Normalized target ------------------------------------------------------
@@ -129,7 +154,7 @@ async def target(inputs: dict[str, Any]) -> dict[str, Any]:
     structured terminator output in a normalized dict. Keeps `kind` / `result` /
     `tools_used` (so run_evals' checks read it unchanged) and adds the derived
     top-level fields the reference evaluators grade on."""
-    out = await agent_graph.evaluate_turn(inputs["message"])
+    out = await agent_graph.evaluate_turn(inputs["message"], model=_RUN_MODEL)
     return {
         **out,
         "found": _derive_found(out),
@@ -646,18 +671,28 @@ async def run_live(limit: int | None, judge: bool) -> int:
         print(f"Live SMOKE run: {len(data)} example(s) from {ds.name}")
     else:
         print(f"Live run: full dataset {ds.name} ({ds.id})")
+    print(f"Agent model: {_RUN_MODEL or DEFAULT_MODEL}")
 
     evaluators: list[Any] = list(REFERENCE_EVALUATORS) + make_metadata_check_evaluators()
     if judge:
         evaluators.append(make_llm_judge())
         print(f"LLM judge ON ({_JUDGE_MODEL})")
 
+    # Name each model's run as its own comparable experiment under the dataset,
+    # and stamp the full model id into metadata so the runs are filterable.
+    model_id = _RUN_MODEL or DEFAULT_MODEL
+    experiment_prefix = (
+        f"sayari-demo-{_model_tag(model_id)}" if _RUN_MODEL else "sayari-demo-langsmith"
+    )
+    metadata: dict[str, Any] = {"model": model_id}
+
     results = await aevaluate(
         target,
         data=data,
         evaluators=evaluators,
         client=client,
-        experiment_prefix="sayari-demo-langsmith",
+        experiment_prefix=experiment_prefix,
+        metadata=metadata,
         max_concurrency=1,
     )
     print("Uploaded to LangSmith. Experiment:",
@@ -678,7 +713,20 @@ def main() -> None:
                         help="Include the Anthropic LLM judge (only meaningful with --live).")
     parser.add_argument("--limit", type=int, default=None,
                         help="Cap examples (cheap live smoke test, e.g. --limit 1).")
+    parser.add_argument("--model", default=None,
+                        help=(
+                            "Main-agent model for the live run (allowlisted; "
+                            "off-list falls back to the default Sonnet 4.5). "
+                            "One of: " + ", ".join(sorted(ALLOWED_MODELS))
+                        ))
     args = parser.parse_args()
+
+    global _RUN_MODEL
+    _RUN_MODEL = args.model
+    if args.model is not None and args.model not in ALLOWED_MODELS:
+        print(f"warning: --model {args.model!r} is not allowlisted; falling back "
+              f"to the default ({DEFAULT_MODEL}). Allowed: "
+              + ", ".join(sorted(ALLOWED_MODELS)))
 
     if args.live:
         sys.exit(asyncio.run(run_live(args.limit, args.judge)))

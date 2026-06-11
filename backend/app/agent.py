@@ -28,6 +28,7 @@ async def run_turn(
     force_risk_report: bool = False,
     turn_id: str | None = None,
     parent_turn_id: str | None = None,
+    model: str | None = None,
 ) -> None:
     impl = get_settings().agent_impl
     if impl == "graph":
@@ -37,8 +38,10 @@ async def run_turn(
         await agent_graph.run_turn(
             conversation_id, user_message, turn_index, pinned_node_ids,
             force_risk_report, turn_id=turn_id, parent_turn_id=parent_turn_id,
+            model=model,
         )
         return
     await agent_native.run_turn(
-        conversation_id, user_message, turn_index, pinned_node_ids, force_risk_report
+        conversation_id, user_message, turn_index, pinned_node_ids,
+        force_risk_report, model=model,
     )
