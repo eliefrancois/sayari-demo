@@ -369,6 +369,20 @@ export const SOURCE_SYSTEM_META: Record<
   sayari: { label: "Sayari", color: "var(--source-sayari)" }, // indigo
 };
 
+/**
+ * Node-TYPE accent colors (type strip + top-bar type legend). Distinct from
+ * risk severity and source provenance: this channel only tints the small
+ * uppercase type labels so an analyst can scan ENTITY / OFFICER / etc. at a
+ * glance. CSS vars from globals.css. "Other" stays muted gray on purpose.
+ */
+export const NODE_TYPE_COLORS: Record<NodeLabel, string> = {
+  Entity: "var(--type-entity)", // blue
+  Officer: "var(--type-officer)", // violet
+  Intermediary: "var(--type-intermediary)", // amber/ochre
+  Address: "var(--type-address)", // teal-green
+  Other: "var(--type-other)", // muted gray
+};
+
 /** Risk-severity accent colors (glow/fill scale). CSS vars from globals.css. */
 export const RISK_LEVEL_COLORS: Record<SayariRiskLevel, string> = {
   critical: "var(--risk-critical)",

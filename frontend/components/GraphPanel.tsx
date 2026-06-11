@@ -36,6 +36,7 @@ import type {
   SourceSystem,
 } from "@/lib/types";
 import {
+  NODE_TYPE_COLORS,
   RISK_LEVEL_COLORS,
   SOURCE_SYSTEM_META,
   sourceSystemOf,
@@ -83,7 +84,10 @@ function NodeLabelContent({ raw }: { raw: ERGraphNode }) {
   const risk = nodeRiskLevel(raw);
   return (
     <div className="text-center">
-      <div className="mb-0.5 font-mono text-[8px] uppercase leading-none tracking-[0.14em] text-muted-foreground">
+      <div
+        className="mb-0.5 font-mono text-[8px] font-semibold uppercase leading-none tracking-[0.14em]"
+        style={{ color: NODE_TYPE_COLORS[raw.label] }}
+      >
         {raw.label}
         {risk === "critical" && (
           <span style={{ color: RISK_LEVEL_COLORS.critical }}> · sanctioned</span>

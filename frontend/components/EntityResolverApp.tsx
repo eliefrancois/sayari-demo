@@ -38,6 +38,7 @@ import {
 } from "@/lib/sse-client";
 import { collectTradeRoutes, collectTradeSubjects } from "@/lib/map/trade-routes";
 import type { ExpandKind, GraphEdge, GraphNode, NodeLabel } from "@/lib/types";
+import { NODE_TYPE_COLORS } from "@/lib/types";
 
 /** Which lens the evidence pane shows: the React Flow graph or the routes map. */
 type CenterView = "graph" | "map";
@@ -757,12 +758,20 @@ function EvidencePaneHeader({
                 onClick={() => onToggleLabel(label)}
                 title={hidden ? `Show ${label} nodes` : `Hide ${label} nodes`}
                 className={
-                  "cursor-pointer rounded-md px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] transition-colors " +
+                  "flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] transition-colors " +
                   (hidden
                     ? "text-muted-foreground/50 line-through hover:text-muted-foreground"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground")
                 }
               >
+                <span
+                  aria-hidden
+                  className="inline-block h-2 w-2 shrink-0 rounded-full"
+                  style={{
+                    backgroundColor: NODE_TYPE_COLORS[label],
+                    opacity: hidden ? 0.4 : 1,
+                  }}
+                />
                 {label}
               </button>
             );

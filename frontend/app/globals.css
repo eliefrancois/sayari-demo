@@ -115,6 +115,15 @@
   --source-sayari: oklch(0.511 0.262 276.966); /* indigo */
   --source-icij: oklch(0.591 0.293 322.896); /* magenta/violet */
   --source-sanctions: oklch(0.6 0.118 184.704); /* teal */
+
+  /* Node TYPE accent (type strip + top-bar type legend). A separate, muted
+     channel from risk/source — these tint small uppercase labels, never the
+     glow or ring, so type stays legible without competing with severity. */
+  --type-entity: oklch(0.52 0.13 248); /* blue */
+  --type-officer: oklch(0.52 0.18 300); /* violet */
+  --type-intermediary: oklch(0.62 0.13 70); /* amber/ochre */
+  --type-address: oklch(0.55 0.11 168); /* teal-green */
+  --type-other: oklch(0.556 0 0); /* muted gray */
 }
 
 /* Dark variant = token swap (built but not enabled; light is the default). */
