@@ -202,6 +202,16 @@ let thoughtCounter = 0;
 
 export const edgeKey = (e: GraphEdge) => `${e.source}::${e.type}::${e.target}`;
 
+/** True when a graph node name is missing, a placeholder, or the raw entity id. */
+function isWeakGraphName(name: string | undefined, nodeId: string): boolean {
+  if (!name) return true;
+  const n = name.trim();
+  if (!n || n === nodeId || n === "(unnamed)") return true;
+  if (n.startsWith("…") && nodeId.endsWith(n.slice(1))) return true;
+  if (n.startsWith("Unresolved entity")) return true;
+  return false;
+}
+
 /**
  * Fold a node into the accumulating graph, UNIONING subject-membership across
  * the turns/tools that emit it. The backend already unions on its stored graph,
@@ -225,10 +235,15 @@ export function mergeGraphNode(prev: GraphNode | undefined, next: GraphNode): Gr
     next.label === "Other" && prev.label && prev.label !== "Other"
       ? prev.label
       : next.label ?? prev.label;
+  const name =
+    isWeakGraphName(next.name, next.id) && !isWeakGraphName(prev.name, prev.id)
+      ? prev.name
+      : next.name ?? prev.name;
   return {
     ...prev,
     ...next,
     label,
+    name,
     subject_ids: subjectIds,
     introduced_turn_id: prev.introduced_turn_id ?? next.introduced_turn_id ?? null,
   };

@@ -151,6 +151,75 @@ def _coerce_label(type_str: str | None) -> str:
     return _label_for_type(type_str)
 
 
+# Profile relationship types that surface controlling individuals (officers,
+# directors, lawyers). Ownership traversal does not replay these; they live in
+# the profile's 1-hop `relationships` block (`types.has_officer`, etc.).
+_OFFICER_REL_TYPES = frozenset(
+    {"has_officer", "has_director", "has_manager", "has_lawyer", "officer_of"}
+)
+
+
+def _is_weak_name(name: str | None, node_id: str) -> bool:
+    """True when `name` is missing, a placeholder, or the raw Sayari entity id."""
+    if not name:
+        return True
+    n = name.strip()
+    if not n or n == node_id or n == "(unnamed)":
+        return True
+    if n.startswith("…") and node_id.endswith(n[1:]):
+        return True
+    if n.startswith("Unresolved entity"):
+        return True
+    # Traversal roots sometimes echo the id when the API's `name` field is blank.
+    if len(n) >= 18 and n == node_id:
+        return True
+    return False
+
+
+def _resolve_root_label(
+    root_id: str,
+    hint: str | None,
+    id_lookup: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    """Pick a display name for a traversal root (ownership/watchlist/shortest_path)."""
+    if hint and not _is_weak_name(hint, root_id):
+        return hint.strip()
+    if id_lookup:
+        known = (id_lookup.get(root_id) or {}).get("label")
+        if known and not _is_weak_name(known, root_id):
+            return known
+    return f"…{root_id[-6:]}"
+
+
+def _relationship_type_keys(item: dict[str, Any]) -> list[str]:
+    """Sayari profile relationships carry edge types under `types`; traversals use `field`."""
+    types = item.get("types")
+    if isinstance(types, dict) and types:
+        return [str(k) for k in types.keys()]
+    field = item.get("field")
+    if field:
+        return [str(field)]
+    return ["linked_to"]
+
+
+def _apply_id_lookup(
+    nodes: dict[str, GraphNode],
+    id_lookup: dict[str, dict[str, Any]] | None,
+) -> None:
+    """Name (and re-label) nodes the raw API left anonymous, in place."""
+    if not id_lookup:
+        return
+    for nid, node in nodes.items():
+        info = id_lookup.get(nid) or {}
+        named = info.get("label")
+        if named and _is_weak_name(node.name, nid):
+            node.name = named
+        if node.label == "Other" and info.get("type"):
+            coerced = _coerce_label(info.get("type"))
+            if coerced != "Other":
+                node.label = coerced  # type: ignore[assignment]
+
+
 def related_entity_lookup(raw_profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """id -> {label, type, sanctioned, pep, countries} from the profile's
     1-hop `relationships` block. A risk factor's `traversal_path` lands on these
@@ -461,12 +530,111 @@ def search_to_nodes(
 # --- Graph mapping ---------------------------------------------------------
 
 
+def relationships_to_neighborhood(
+    raw_profile: dict[str, Any],
+    *,
+    limit: int = 50,
+) -> Neighborhood:
+    """Map the profile's 1-hop `relationships` block onto nodes + edges.
+
+    Sayari stores edge types under each item's `types` dict (e.g. `has_officer`,
+    `owner_of`, `shareholder_of`). Ownership traversal does NOT replay officers;
+    they only appear here. Officers/directors render as `Officer` nodes linked
+    from the profiled entity."""
+    nodes: dict[str, GraphNode] = {}
+    edges: dict[str, GraphEdge] = {}
+    root_id = raw_profile.get("id")
+    if not root_id:
+        return Neighborhood(nodes=[], edges=[], metadata={"source_system": "sayari", "kind": "relationships"})
+
+    root_label = raw_profile.get("label") or "(unnamed)"
+    nodes[root_id] = _node(
+        root_id,
+        _label_for_type(raw_profile.get("type")),
+        root_label,
+        properties={
+            "type": raw_profile.get("type"),
+            "sanctioned": raw_profile.get("sanctioned"),
+            "pep": raw_profile.get("pep"),
+        },
+    )
+
+    rels = raw_profile.get("relationships") if isinstance(raw_profile, dict) else None
+    data = rels.get("data") if isinstance(rels, dict) else None
+    for item in (data or [])[: max(1, limit)]:
+        if not isinstance(item, dict):
+            continue
+        tgt = item.get("target") or {}
+        if not isinstance(tgt, dict) or not tgt.get("id"):
+            continue
+        n = _entity_node(tgt)
+        nodes.setdefault(n.id, n)
+        for rel in _relationship_type_keys(item):
+            _add_edge(edges, root_id, n.id, rel)
+
+    return Neighborhood(
+        nodes=list(nodes.values()),
+        edges=list(edges.values()),
+        metadata={
+            "root_id": root_id,
+            "source_system": "sayari",
+            "kind": "relationships",
+            "relationship_count": len(data or []),
+        },
+    )
+
+
+def profile_officers(raw_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """Officer/director names from the profile relationships block (for tool JSON)."""
+    root_id = raw_profile.get("id")
+    out: list[dict[str, Any]] = []
+    rels = raw_profile.get("relationships") if isinstance(raw_profile, dict) else None
+    data = rels.get("data") if isinstance(rels, dict) else None
+    for item in data or []:
+        if not isinstance(item, dict):
+            continue
+        types = item.get("types") or {}
+        if not isinstance(types, dict):
+            continue
+        officer_keys = [k for k in types if k in _OFFICER_REL_TYPES]
+        if not officer_keys:
+            continue
+        tgt = item.get("target") or {}
+        if not isinstance(tgt, dict) or not tgt.get("id"):
+            continue
+        positions: list[str] = []
+        for key in officer_keys:
+            for entry in types.get(key) or []:
+                if not isinstance(entry, dict):
+                    continue
+                attrs = entry.get("attributes") or {}
+                for pos in attrs.get("position") or []:
+                    if isinstance(pos, dict) and pos.get("value"):
+                        positions.append(str(pos["value"]))
+        out.append(
+            {
+                "entity_id": tgt.get("id"),
+                "name": tgt.get("label") or "(unnamed)",
+                "type": tgt.get("type"),
+                "relationship_types": officer_keys,
+                "positions": positions,
+                "sanctioned": tgt.get("sanctioned"),
+                "pep": tgt.get("pep"),
+                "countries": tgt.get("countries") or [],
+            }
+        )
+    if root_id:
+        out.sort(key=lambda o: (o.get("name") or "").lower())
+    return out
+
+
 def ownership_to_neighborhood(
     traversal: dict[str, Any],
     root_id: str,
     root_label: str,
     direction: str,
     root_type: str | None = None,
+    id_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> Neighborhood:
     """Map a traversal result onto our Neighborhood (source-tagged "sayari").
 
@@ -477,7 +645,8 @@ def ownership_to_neighborhood(
     nodes: dict[str, GraphNode] = {}
     edges: dict[str, GraphEdge] = {}
 
-    nodes[root_id] = _node(root_id, _label_for_type(root_type), root_label)
+    label = _resolve_root_label(root_id, root_label, id_lookup)
+    nodes[root_id] = _node(root_id, _label_for_type(root_type), label)
 
     for item in traversal.get("data") or []:
         if not isinstance(item, dict):
@@ -505,6 +674,7 @@ def ownership_to_neighborhood(
             _add_edge(edges, prev, tid, field)
             prev = tid
 
+    _apply_id_lookup(nodes, id_lookup)
     return Neighborhood(
         nodes=list(nodes.values()),
         edges=list(edges.values()),
@@ -1127,25 +1297,7 @@ def shortest_path_to_neighborhood(
         if last_id != tid:
             _add_edge(edge_map, last_id, tid, last_field)
         nb.edges = list(edge_map.values())
-    if id_lookup:
-        # Name (and re-label) any hop/target node the raw result left anonymous
-        # or generically typed, from entities already seen this conversation
-        # (richer in-hand data wins, so a real label is never overwritten by a
-        # placeholder).
-        for nid, node in nodes.items():
-            info = id_lookup.get(nid) or {}
-            named = info.get("label")
-            if named and (not node.name or node.name == "(unnamed)"
-                          or node.name == f"…{nid[-6:]}"):
-                node.name = named
-            # A hop that arrived without a usable `type` defaults to the "Other"
-            # label; when the known entity carries a type/label, coerce a
-            # specific label so a known person/company (e.g. an intermediary we
-            # already resolved) doesn't keep rendering as "Other".
-            if node.label == "Other" and info.get("type"):
-                coerced = _coerce_label(info.get("type"))
-                if coerced != "Other":
-                    node.label = coerced  # type: ignore[assignment]
+    _apply_id_lookup(nodes, id_lookup)
     nb.nodes = list(nodes.values())
     nb.metadata["kind"] = "shortest_path"
     nb.metadata["target_id"] = tid

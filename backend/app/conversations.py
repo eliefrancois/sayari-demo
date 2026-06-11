@@ -55,6 +55,7 @@ from typing import Any, Iterator
 import httpx
 
 from app.config import get_settings
+from app import sayari as _sayari
 
 log = logging.getLogger("erre.conversations")
 
@@ -887,6 +888,13 @@ def _merge_node(prev: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     turns (so a node a later turn re-attributes to a second subject keeps its
     original membership) and `introduced_turn_id` keeps the EARLIEST writer."""
     merged = {**prev, **new}
+    node_id = str(merged.get("id") or prev.get("id") or new.get("id") or "")
+    prev_name = prev.get("name")
+    new_name = new.get("name")
+    if _sayari._is_weak_name(new_name, node_id) and not _sayari._is_weak_name(
+        prev_name, node_id
+    ):
+        merged["name"] = prev_name
     # Don't let a generic "Other" label clobber a more specific one: prefer a
     # specific label from EITHER side. A node first created as "Other" (a hop
     # that arrived without a usable type) keeps "Officer"/"Entity"/... once a

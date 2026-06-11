@@ -207,12 +207,35 @@ async def sayari_profile_tool(
         **(await _known_entity_lookup(conversation_id)),
         **sayari.related_entity_lookup(raw),
     }
-    nb: Neighborhood = await _resolve_and_map_risk_paths(slim, id_lookup, conversation_id)
+    rel_nb = sayari.relationships_to_neighborhood(raw)
+    risk_nb = await _resolve_and_map_risk_paths(slim, id_lookup, conversation_id)
+    # Union 1-hop relationships (officers, shareholders, agents) with risk-path chains.
+    node_map = {n.id: n for n in rel_nb.nodes}
+    for n in risk_nb.nodes:
+        prev = node_map.get(n.id)
+        if prev is None:
+            node_map[n.id] = n
+        elif sayari._is_weak_name(n.name, n.id) and not sayari._is_weak_name(prev.name, n.id):
+            node_map[n.id] = prev
+        elif sayari._is_weak_name(prev.name, n.id) and not sayari._is_weak_name(n.name, n.id):
+            node_map[n.id] = n
+        else:
+            node_map[n.id] = n
+    edge_map = {
+        f"{e.source}::{e.type}::{e.target}": e for e in rel_nb.edges + risk_nb.edges
+    }
+    nb = Neighborhood(
+        nodes=list(node_map.values()),
+        edges=list(edge_map.values()),
+        metadata={**rel_nb.metadata, **risk_nb.metadata},
+    )
     risk = slim.get("risk") or {}
+    officers = sayari.profile_officers(raw)
     return {
         "profile": slim,
         # Convenience for the agent: the factors worth surfacing, already slim.
         "risk_factors": (risk.get("direct_factors") or []) + (risk.get("derived_factors") or []),
+        "officers": officers,
         "nodes": [n.model_dump() for n in nb.nodes],
         "edges": [e.model_dump() for e in nb.edges],
         "metadata": nb.metadata,
@@ -223,18 +246,28 @@ async def sayari_ownership_tool(
     entity_id: str,
     direction: str = "downstream",
     limit: int = 25,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     """Sayari ownership/control traversal (upstream UBOs or downstream holdings)."""
     raw = await asyncio.to_thread(sayari.ownership, entity_id, direction, limit)
-    root_label = raw.get("name") or entity_id
+    known = await _known_entity_lookup(conversation_id)
+    root_type = (known.get(entity_id) or {}).get("type")
+    root_label = sayari._resolve_root_label(
+        entity_id, raw.get("name"), known
+    )
     nb: Neighborhood = sayari.ownership_to_neighborhood(
-        raw, entity_id, str(root_label), direction
+        raw, entity_id, root_label, direction, root_type, id_lookup=known
     )
     return {
         "nodes": [n.model_dump() for n in nb.nodes],
         "edges": [e.model_dump() for e in nb.edges],
         "metadata": nb.metadata,
         "direction": direction,
+        "note": (
+            "Officers and directors are NOT included in ownership traversal; "
+            "call sayari_profile for the 1-hop relationships block (has_officer, "
+            "shareholder_of, etc.) and the `officers` list."
+        ),
     }
 
 
@@ -318,11 +351,21 @@ async def sayari_summary_tool(
     }
 
 
-async def sayari_watchlist_tool(entity_id: str, limit: int = 10) -> dict[str, Any]:
+async def sayari_watchlist_tool(
+    entity_id: str, limit: int = 10, conversation_id: str | None = None
+) -> dict[str, Any]:
     """Indirect PEP/watchlist exposure up and down the ownership chain."""
     raw = await asyncio.to_thread(sayari.watchlist, entity_id, limit)
-    root_label = raw.get("name") or entity_id
-    nb: Neighborhood = sayari.watchlist_to_neighborhood(raw, entity_id, str(root_label))
+    known = await _known_entity_lookup(conversation_id)
+    root_type = (known.get(entity_id) or {}).get("type")
+    root_label = sayari._resolve_root_label(entity_id, raw.get("name"), known)
+    nb: Neighborhood = sayari.watchlist_to_neighborhood(
+        raw, entity_id, root_label, root_type
+    )
+    _apply = sayari._apply_id_lookup
+    nodes = {n.id: n for n in nb.nodes}
+    _apply(nodes, known)
+    nb.nodes = list(nodes.values())
     return {
         "nodes": [n.model_dump() for n in nb.nodes],
         "edges": [e.model_dump() for e in nb.edges],
@@ -847,10 +890,13 @@ TOOLS: list[dict[str, Any]] = [
             "Given a Sayari entity_id (from sayari_resolve), return the entity's profile: "
             "identity, flags (`sanctioned`, `pep`, `state_owned`), key identifiers, "
             "relationship counts, and — the headline — its RISK FACTORS, already slimmed to "
-            "stay within budget. The risk block has: `counts_by_level` (how many factors at "
-            "each severity: critical > high > elevated > relevant), `total_factors` (the full "
-            "count, so you know what's summarized), `direct_factors` (directly sanctioned / "
-            "state-owned / export-controlled — the headline hits, verbatim), and "
+            "stay within budget. Also returns `officers` (named individuals from "
+            "`has_officer` / director relationships) and graph nodes/edges for the full 1-hop "
+            "relationship neighborhood (officers, shareholders, registered agents, etc.) "
+            "PLUS highlighted risk-path chains. The risk block has: `counts_by_level` (how many "
+            "factors at each severity: critical > high > elevated > relevant), `total_factors` "
+            "(the full count, so you know what's summarized), `direct_factors` (directly "
+            "sanctioned / state-owned / export-controlled — the headline hits, verbatim), and "
             "`derived_factors` (the top ownership-derived factors WITH their `traversal_path` "
             "— the exact ownership/control chain that triggered the risk, which renders as a "
             "highlighted chain on the graph). Factors named `psa_*` are ER-derived "
@@ -877,6 +923,8 @@ TOOLS: list[dict[str, Any]] = [
             "edges (rendered on the canvas, source-tagged 'sayari'). direction='downstream' "
             "(default) shows what this entity OWNS (subsidiaries, branches, holdings); "
             "direction='ubo' shows who ULTIMATELY OWNS it (beneficial owners up the chain). "
+            "Officers and directors are NOT in ownership traversal — call sayari_profile for "
+            "the 1-hop `has_officer` neighborhood and the `officers` list. "
             "Use 'ubo' to answer 'who really controls X?' and 'downstream' to answer 'what "
             "does X control?'. Each returned node carries its own sanctioned/pep flags, so one "
             "traversal already reveals which owners or holdings are risky. Capped by `limit`; "
@@ -1234,6 +1282,8 @@ _NEEDS_CONVERSATION_ID = frozenset(
         "recall_memory",
         "sayari_profile",
         "sayari_summary",
+        "sayari_ownership",
+        "sayari_watchlist",
         "sayari_shortest_path",  # names the source root from prior-turn entities
     }
 )

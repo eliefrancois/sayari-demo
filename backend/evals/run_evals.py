@@ -1103,6 +1103,89 @@ def _tier2_trade_rows() -> list[tuple[str, str, bool, str]]:
     ]
 
 
+def _sayari_mapper_rows() -> list[tuple[str, str, bool, str]]:
+    """Regression: profile 1-hop relationships (officers) + traversal root naming."""
+    from app import conversations
+    from app import sayari
+
+    eid = "AGSIlMb2-mTUy4X1T6VaCg"
+    raw = {
+        "id": eid,
+        "label": "PEERMUSIC III, LTD.",
+        "type": "company",
+        "relationships": {
+            "data": [
+                {
+                    "types": {
+                        "has_officer": [
+                            {"attributes": {"position": [{"value": "Treasurer"}]}}
+                        ]
+                    },
+                    "target": {
+                        "id": "wx7CBGI9bfdvxxz6jcWByQ",
+                        "label": "Lenny Soohoo",
+                        "type": "person",
+                    },
+                }
+            ]
+        },
+    }
+    rel_nb = sayari.relationships_to_neighborhood(raw)
+    officers = sayari.profile_officers(raw)
+    root_node = next((n for n in rel_nb.nodes if n.id == eid), None)
+    officer_node = next((n for n in rel_nb.nodes if n.id == "wx7CBGI9bfdvxxz6jcWByQ"), None)
+    rel_ok = (
+        root_node is not None
+        and root_node.name == "PEERMUSIC III, LTD."
+        and officer_node is not None
+        and officer_node.label == "Officer"
+        and any(
+            e.type == "has_officer" and e.source == eid and e.target == "wx7CBGI9bfdvxxz6jcWByQ"
+            for e in rel_nb.edges
+        )
+    )
+    officers_ok = (
+        len(officers) == 1
+        and officers[0]["name"] == "Lenny Soohoo"
+        and "Treasurer" in officers[0]["positions"]
+    )
+
+    trav = {"data": [], "name": ""}
+    nb = sayari.ownership_to_neighborhood(
+        trav,
+        eid,
+        "",
+        "downstream",
+        id_lookup={eid: {"label": "PEERMUSIC III, LTD.", "type": "company"}},
+    )
+    own_root = next((n for n in nb.nodes if n.id == eid), None)
+    own_root_ok = own_root is not None and own_root.name == "PEERMUSIC III, LTD."
+
+    prior = {
+        "nodes": [{"id": eid, "label": "Entity", "name": "PEERMUSIC III, LTD."}],
+        "edges": [],
+    }
+    merged = conversations.merge_graph_pure(
+        prior,
+        [{"id": eid, "label": "Entity", "name": eid}],
+        [],
+    )
+    merged_root = next((n for n in merged["nodes"] if n["id"] == eid), None)
+    merge_name_ok = merged_root is not None and merged_root["name"] == "PEERMUSIC III, LTD."
+
+    case = "sayari_mappers"
+    return [
+        (case, "profile_relationships_officers", rel_ok,
+         f"nodes={len(rel_nb.nodes)}, edges={len(rel_nb.edges)}"),
+        (case, "profile_officers_json", officers_ok,
+         f"officers={[o['name'] for o in officers]}"),
+        (case, "ownership_root_named", own_root_ok,
+         f"root_name={own_root.name if own_root else None}"),
+        (case, "merge_graph_name_preserved", merge_name_ok,
+         f"merged_name={merged_root['name'] if merged_root else None}"),
+    ]
+
+
 async def _episodic_disabled_rows() -> list[tuple[str, str, bool, str]]:
     """Deterministic Phase D regression (doc 09 §D): the GRACEFUL NO-OP contract
     of L2 episodic vector memory when it is DISABLED (the default, and how the
@@ -1275,6 +1358,7 @@ async def _run_local(
         ("source_enum", _source_enum_rows),
         ("conversation_index", _conversation_index_rows),
         ("tier2_trade", _tier2_trade_rows),
+        ("sayari_mappers", _sayari_mapper_rows),
     ):
         try:
             for r in fn():

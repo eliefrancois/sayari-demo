@@ -1,4 +1,3 @@
-// Evidence graph: d3-force network of entities/edges with hulls, time-travel scope, and a node context menu.
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -23,14 +22,10 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
-  forceX,
-  forceY,
   type Simulation,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
-
-import { EntityHullOverlay, type HullGroup } from "./GraphPanel/EntityHullOverlay";
 
 import type {
   ExpandKind,
@@ -128,7 +123,7 @@ function buildEdges(edges: ERGraphEdge[]): Edge[] {
     const stroke = dualUse ? DUAL_USE_COLOR : EDGE_COLOR;
     return {
       id: `e-${i}-${e.source}-${e.target}-${e.type}`,
-      // ER edge identity, matching the store's edgeKey: lets the time-travel
+      // ER edge identity, matching the store's edgeKey — lets the time-travel
       // overlay dim inherited edges without re-deriving type from the id.
       data: { erKey: `${e.source}::${e.type}::${e.target}` },
       source: e.source,
@@ -158,86 +153,8 @@ type SimNode = SimulationNodeDatum & {
   id: string;
   raw: ERGraphNode;
   isSubject: boolean;
-  /** Group-aware layout target: the centroid of this node's subject anchors. */
-  tx: number;
-  ty: number;
 };
 type SimLink = SimulationLinkDatum<SimNode>;
-
-// Approximate half-size of a rendered node pill, used to turn React Flow's
-// top-left node position into a center point for layout targets + hulls.
-const NODE_HALF_W = 70;
-const NODE_HALF_H = 18;
-
-/** Deterministic 32-bit hash (FNV-1a) of a string, seeds reproducible jitter. */
-function hashStr(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-/** Stable per-node jitter in [-amp, amp], so first-frame seeds don't stack. */
-function seededJitter(id: string, axis: string, amp: number): number {
-  return ((hashStr(id + axis) % 1000) / 1000 - 0.5) * 2 * amp;
-}
-
-/**
- * Stable anchor position per subject id: subjects are sorted by id and laid out
- * on a ring (single subject -> origin) so the arrangement is deterministic
- * across renders and reloads. A node is later pulled toward the centroid of the
- * anchors of every subject it belongs to, so shared nodes settle in the overlap.
- */
-function computeSubjectAnchors(
-  nodes: ERGraphNode[]
-): Map<string, { x: number; y: number }> {
-  const ids = new Set<string>();
-  for (const n of nodes) for (const s of n.subject_ids ?? []) if (s) ids.add(s);
-  const sorted = Array.from(ids).sort();
-  const anchors = new Map<string, { x: number; y: number }>();
-  const count = sorted.length;
-  if (count === 0) return anchors;
-  if (count === 1) {
-    anchors.set(sorted[0], { x: 0, y: 0 });
-    return anchors;
-  }
-  // Radius grows with subject count so neighborhoods don't crowd each other.
-  const radius = Math.max(480, count * 220);
-  sorted.forEach((id, i) => {
-    const theta = (2 * Math.PI * i) / count - Math.PI / 2;
-    anchors.set(id, { x: radius * Math.cos(theta), y: radius * Math.sin(theta) });
-  });
-  return anchors;
-}
-
-/** Layout target for a node: centroid of its subjects' anchors, else origin. */
-function layoutTarget(
-  node: ERGraphNode,
-  anchors: Map<string, { x: number; y: number }>,
-  grouped = false
-): { x: number; y: number } {
-  const subs = (node.subject_ids ?? []).filter((s) => anchors.has(s));
-  if (subs.length === 0) {
-    // Ungrouped nodes (no subject_ids) used to pile at origin and swallow the
-    // path between subject neighborhoods. Scatter them on an outer ring instead.
-    if (grouped && anchors.size > 0) {
-      const outerR = Math.max(480, anchors.size * 220) * 0.6;
-      const angle = ((hashStr(node.id) % 360) * Math.PI) / 180;
-      return { x: outerR * Math.cos(angle), y: outerR * Math.sin(angle) };
-    }
-    return { x: 0, y: 0 };
-  }
-  let x = 0;
-  let y = 0;
-  for (const s of subs) {
-    const a = anchors.get(s)!;
-    x += a.x;
-    y += a.y;
-  }
-  return { x: x / subs.length, y: y / subs.length };
-}
 
 /** Stable hash of the input dataset; lets us detect "nothing changed, skip restart". */
 function datasetKey(nodes: ERGraphNode[], edges: ERGraphEdge[]) {
@@ -277,13 +194,13 @@ export interface GraphPanelProps {
    * still re-zooms.
    */
   focusRequest?: { nodeId: string; tick: number } | null;
-  /** Node labels toggled off in the legend: hidden from layout and render. */
+  /** Node labels toggled off in the legend — hidden from layout and render. */
   hiddenLabels?: Set<NodeLabel>;
   /** User chose an expand kind from the right-click menu. */
   onExpandNode?: (nodeId: string, kind: ExpandKind) => void;
   /** User chose "pin/unpin to context" from the right-click menu. */
   onTogglePin?: (nodeId: string) => void;
-  /** User chose "Open detail view": opens the right-hand EntityDetailPanel. */
+  /** User chose "Open detail view" — opens the right-hand EntityDetailPanel. */
   onOpenDetail?: (nodeId: string) => void;
   /**
    * Lead counts from the latest broad search: how many leads are pinned to the
@@ -335,7 +252,7 @@ export function GraphPanel(props: GraphPanelProps) {
  * Why d3-force instead of a hierarchical (dagre) layout: investigation graphs
  * are messy and multi-rooted (officers cross-link to entities cross-link to
  * addresses cross-link to other entities via shared addresses). A force
- * simulation makes the structure legible: strongly-connected clusters
+ * simulation makes the structure legible — strongly-connected clusters
  * physically clump, shared-address shell patterns become visible, and the
  * "alive" motion during agent runs matches the dynamic investigation feel.
  * This is the same layout style Sayari Graph and other RegTech tools use.
@@ -347,7 +264,7 @@ export function GraphPanel(props: GraphPanelProps) {
  *      `rfNodes` (React Flow's render state).
  *   4. User drags pin a node via `fx`/`fy` so the sim stops moving it.
  *   5. The subject (first node) is anchored at (0,0) so the rest of the
- *      graph orbits around a stable focal point. Otherwise the whole
+ *      graph orbits around a stable focal point — otherwise the whole
  *      cluster drifts every time new neighbors arrive.
  */
 function GraphPanelInner({
@@ -378,7 +295,7 @@ function GraphPanelInner({
     leadsShown > 0;
 
   // The unpinned leads to overlay (when toggled on), minus any that already
-  // exist as persistent nodes (those are real graph members, not overlay).
+  // exist as persistent nodes — those are real graph members, not overlay.
   const overlayNodes = useMemo(() => {
     if (!showOverlayLeads || !overlayLeadNodes?.length) return [] as ERGraphNode[];
     const baseIds = new Set(nodes.map((n) => n.id));
@@ -457,7 +374,7 @@ function GraphPanelInner({
       // Deps changed identity without the dataset changing (the parent
       // rebuilds the node/edge arrays on every render, which during SSE
       // streaming means every token). The cleanup below already stopped the
-      // still-relevant sim, so resume it instead of leaving the layout frozen.
+      // still-relevant sim — resume it instead of leaving the layout frozen.
       simRef.current?.restart();
       return;
     }
@@ -473,39 +390,27 @@ function GraphPanelInner({
 
     const subjectId = visibleNodes[0]?.id;
 
-    // Group-aware layout (plan Phase 2): stable per-subject anchors. When the
-    // graph carries subject membership we pull each node toward the centroid of
-    // its subjects' anchors (multi-subject nodes land in the overlap). Legacy /
-    // ICIJ graphs with no membership fall back to the original origin-anchored
-    // behavior, so nothing about those layouts changes.
-    const subjectAnchors = computeSubjectAnchors(visibleNodes);
-    const grouped = subjectAnchors.size > 0;
-
-    // Seed each sim node from its warm-started position (if any) or, for a
-    // reproducible first frame, its layout target plus a deterministic hash
-    // jitter (replaces the old Math.random scatter that reshuffled clusters).
+    // Seed each sim node with a known position (if any) or a small random
+    // scatter near the origin. The scatter is tiny so the sim doesn't have
+    // to do a big spread-out animation on the first run.
     const simNodes: SimNode[] = visibleNodes.map((n) => {
       const prev = positionsRef.current.get(n.id);
       const isSubject = n.id === subjectId;
-      const target = layoutTarget(n, subjectAnchors, grouped);
       const sn: SimNode = {
         id: n.id,
         raw: n,
         isSubject,
-        tx: target.x,
-        ty: target.y,
-        x: prev?.x ?? target.x + seededJitter(n.id, "x", 40),
-        y: prev?.y ?? target.y + seededJitter(n.id, "y", 40),
+        x: prev?.x ?? (Math.random() - 0.5) * 80,
+        y: prev?.y ?? (Math.random() - 0.5) * 80,
       };
-      if (prev?.pinned) {
-        // User-dragged: keep where they put it (wins over group pull).
-        sn.fx = prev.x;
-        sn.fy = prev.y;
-      } else if (!grouped && isSubject) {
-        // Ungrouped legacy graphs: keep the subject pinned at origin so the
-        // network orbits a stable focal point (the pre-grouping behavior).
+      if (isSubject) {
+        // Anchor subject at origin so the whole graph orbits something stable.
         sn.fx = 0;
         sn.fy = 0;
+      } else if (prev?.pinned) {
+        // User-dragged: keep where they put it.
+        sn.fx = prev.x;
+        sn.fy = prev.y;
       }
       return sn;
     });
@@ -537,28 +442,12 @@ function GraphPanelInner({
           .distance(160)
           .strength(0.55)
       )
-      // Pull toward origin. Weak, since the subject anchors / origin pin do most
+      // Pull toward origin. Weak — the subject anchor at (0,0) does most
       // of the centering work.
       .force("center", forceCenter(0, 0).strength(0.05))
       // Stop nodes from overlapping. Radius is a touch bigger than the
       // rendered node so labels don't collide either.
       .force("collide", forceCollide<SimNode>(72).strength(0.9))
-      // Group pull: draw each node toward its subject-anchor centroid so
-      // per-subject neighborhoods cluster and shared nodes sit between them.
-      // Stronger when there are multiple subjects to keep regions separated;
-      // gentle for a single subject so its cluster still breathes naturally.
-      .force(
-        "groupX",
-        forceX<SimNode>((d) => d.tx).strength(
-          grouped ? (subjectAnchors.size > 1 ? 0.3 : 0.04) : 0
-        )
-      )
-      .force(
-        "groupY",
-        forceY<SimNode>((d) => d.ty).strength(
-          grouped ? (subjectAnchors.size > 1 ? 0.3 : 0.04) : 0
-        )
-      )
       // Cool down a bit faster than default so the sim doesn't wobble forever.
       .alphaDecay(0.035)
       .velocityDecay(0.45);
@@ -677,7 +566,7 @@ function GraphPanelInner({
 
   // Apply highlight (traversal path / claim hover), pinned-context cues, and
   // the time-travel scope as style overlays. Highlight is a neutral
-  // foreground glow (color stays reserved for risk + source) and wins over
+  // foreground glow — color stays reserved for risk + source — and wins over
   // pinned when both apply. Time-travel: this turn's own delta pulses in,
   // inherited (ancestor-path) evidence dims (spec §6).
   const styledNodes = useMemo(() => {
@@ -701,10 +590,7 @@ function GraphPanelInner({
         };
       }
       if (hasHi && highlightedNodeIds!.has(n.id)) {
-        return { ...n, style: { ...n.style, boxShadow: HIGHLIGHT_GLOW, opacity: 1 } };
-      }
-      if (hasHi) {
-        return { ...n, style: { ...n.style, opacity: 0.28 } };
+        return { ...n, style: { ...n.style, boxShadow: HIGHLIGHT_GLOW } };
       }
       if (scopedDelta) {
         if (scopedDelta.nodeIds.has(n.id)) {
@@ -742,89 +628,6 @@ function GraphPanelInner({
       return { ...e, style: { ...e.style, opacity: 0.35 } };
     });
   }, [rfEdges, scopedDelta]);
-
-  // Subject id -> display name, for hull labels. Prefer the subject entity's own
-  // node name when it sits on the canvas.
-  const subjectLabels = useMemo(() => {
-    const byId = new Map(visibleNodes.map((n) => [n.id, n.name] as const));
-    const labels = new Map<string, string>();
-    for (const n of visibleNodes) {
-      for (const s of n.subject_ids ?? []) {
-        if (!s || labels.has(s)) continue;
-        const resolved = byId.get(s);
-        labels.set(s, resolved && resolved !== "(unnamed)" ? resolved : `…${s.slice(-6)}`);
-      }
-    }
-    return labels;
-  }, [visibleNodes]);
-
-  // Primary subjects: entity ids that exist as nodes on the canvas (investigation
-  // roots). Hulls are drawn only for these, not for stray ids or shared hops.
-  const primarySubjectIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const n of visibleNodes) {
-      if (n.id && (n.subject_ids ?? []).includes(n.id)) ids.add(n.id);
-    }
-    return ids;
-  }, [visibleNodes]);
-
-  const MAX_HULL_POINTS = 12;
-
-  // Subject-grouped hull regions: use exclusive members + the subject root so a
-  // dense subsidiary cloud doesn't inflate one giant blob. Shared intermediaries
-  // (multi-subject) shape layout overlap but are excluded from hull geometry.
-  const hullGroups = useMemo<HullGroup[]>(() => {
-    if (subjectLabels.size === 0 || primarySubjectIds.size === 0) return [];
-    const points = new Map<string, [number, number][]>();
-    for (const rn of rfNodes) {
-      const raw = (rn.data as { raw?: ERGraphNode }).raw;
-      if (!raw) continue;
-      const subs = raw.subject_ids ?? [];
-      if (!subs.length) continue;
-      const cx = rn.position.x + NODE_HALF_W;
-      const cy = rn.position.y + NODE_HALF_H;
-      for (const s of subs) {
-        if (!primarySubjectIds.has(s)) continue;
-        const isRoot = raw.id === s;
-        const exclusive = subs.length === 1 && subs[0] === s;
-        if (!isRoot && !exclusive) continue;
-        const arr = points.get(s);
-        if (arr) arr.push([cx, cy]);
-        else points.set(s, [[cx, cy]]);
-      }
-    }
-    const groups: HullGroup[] = [];
-    for (const subjectId of [...primarySubjectIds].sort()) {
-      let pts = points.get(subjectId);
-      if (!pts?.length) continue;
-      if (pts.length > MAX_HULL_POINTS) {
-        const rootPt = pts.find((p) =>
-          rfNodes.some((rn) => {
-            const raw = (rn.data as { raw?: ERGraphNode }).raw;
-            return (
-              raw?.id === subjectId &&
-              rn.position.x + NODE_HALF_W === p[0] &&
-              rn.position.y + NODE_HALF_H === p[1]
-            );
-          })
-        );
-        const anchor = rootPt ?? pts[0];
-        const rest = pts
-          .filter((p) => p !== rootPt)
-          .sort(
-            (a, b) =>
-              Math.hypot(a[0] - anchor[0], a[1] - anchor[1]) -
-              Math.hypot(b[0] - anchor[0], b[1] - anchor[1])
-          )
-          .slice(0, MAX_HULL_POINTS - (rootPt ? 1 : 0));
-        pts = rootPt ? [rootPt, ...rest] : rest;
-      }
-      const label = subjectLabels.get(subjectId);
-      if (!label || label.startsWith("…")) continue;
-      groups.push({ subjectId, label, points: pts });
-    }
-    return groups;
-  }, [rfNodes, subjectLabels, primarySubjectIds]);
 
   const [menu, setMenu] = useState<ContextMenuState>(null);
   const [hover, setHover] = useState<HoverState>(null);
@@ -898,10 +701,6 @@ function GraphPanelInner({
           size={1}
           color="var(--grid-line)"
         />
-        {/* Subject-grouped hull regions, behind the node layer (viewport-synced
-            via ViewportPortal). Hidden during time-travel so the pulse/dim
-            scope reads cleanly. */}
-        {!scopedDelta && <EntityHullOverlay groups={hullGroups} />}
         <Controls />
       </ReactFlow>
 
