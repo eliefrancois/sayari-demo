@@ -1,3 +1,4 @@
+// prompt-kit primitive: chat scroll container that sticks to the bottom.
 "use client"
 
 import { cn } from "@/lib/utils"

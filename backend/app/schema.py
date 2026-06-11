@@ -1,8 +1,7 @@
-"""Pydantic models used across the API, agent, and tools.
+"""Pydantic models for the API, agent, and tools, with provenance enforced in the types.
 
-The point of this file is *enforced provenance*: every claim the agent makes about
-an entity has to point back to a graph node ID or sanctions record. We enforce
-that via the Pydantic types here, not just by polite request in the prompt.
+Every claim has to point back to a graph node id or sanctions record, enforced
+here rather than by polite request in the prompt.
 """
 
 from __future__ import annotations
@@ -54,15 +53,13 @@ class SourceRef(BaseModel):
     @field_validator("source", mode="before")
     @classmethod
     def _normalize_source(cls, v: object) -> object:
-        """Accept the `"sanctions"` source label and canonicalize it to
-        `"opensanctions"`. The watchlist source is spelled `"sanctions"` almost
-        everywhere else in the stack (SourceSystem, the SSE legend, recall_state,
-        sanctions.py), so the model frequently emits `source:"sanctions"` here and
-        the old strict Literal rejected it — a whole class of terminator-validation
-        failures and retry loops. We normalize to `"opensanctions"` (NOT the other
-        way) because that is the value the frontend reads to render the watchlist
-        chip, so existing readers and stored data stay byte-compatible. Runs before
-        the Literal check, so the stored/emitted value is always canonical."""
+        """Canonicalize the `"sanctions"` source label to `"opensanctions"`.
+
+        The watchlist source is spelled `"sanctions"` almost everywhere else, so
+        the model often emits it here and the strict Literal used to reject it. We
+        normalize to `"opensanctions"` (the value the frontend reads) before the
+        Literal check, so stored and emitted data stay byte-compatible.
+        """
         if isinstance(v, str) and v.strip().lower() == "sanctions":
             return "opensanctions"
         return v
@@ -388,6 +385,8 @@ class GraphNode(BaseModel):
 
 
 class GraphEdge(BaseModel):
+    """An edge returned by a graph tool, ready for the frontend's canvas."""
+
     source: str  # source node id
     target: str  # target node id
     type: str  # relationship type, e.g. "officer_of" or "ships_to" (Tier 2 trade)

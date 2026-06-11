@@ -1,3 +1,4 @@
+// prompt-kit primitive: syntax-highlighted code block (Shiki).
 "use client"
 
 import { cn } from "@/lib/utils"

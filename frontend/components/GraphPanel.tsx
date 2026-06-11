@@ -1,3 +1,4 @@
+// Evidence graph: d3-force network of entities/edges with hulls, time-travel scope, and a node context menu.
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

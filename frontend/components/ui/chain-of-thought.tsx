@@ -1,3 +1,4 @@
+// prompt-kit primitive: collapsible chain-of-thought reasoning display.
 "use client"
 
 import {

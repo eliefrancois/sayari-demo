@@ -1,3 +1,4 @@
+// prompt-kit primitive: prompt-suggestion chip with optional highlight.
 "use client"
 
 import { Button, buttonVariants } from "@/components/ui/button"

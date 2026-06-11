@@ -1,3 +1,4 @@
+// Right-hand slide-over showing one entity's registry record, risk flags, relationships, and sources.
 "use client";
 
 import { useEffect, useRef } from "react";

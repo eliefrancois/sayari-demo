@@ -1,3 +1,4 @@
+// Inline answer body for clarify/follow-up turns: narrative, claims, follow-up chips.
 "use client";
 
 import { useRef, useState } from "react";

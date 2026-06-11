@@ -1,17 +1,7 @@
-"""LangChain tool adapter.
+"""LangChain tool adapter: wrap the Anthropic tool descriptors as OpenAI function dicts.
 
-`ChatAnthropic.bind_tools()` accepts several shapes; we feed it OpenAI-style
-function dicts because that's the most explicit and the easiest to eyeball
-against what the native loop sends Anthropic. This module is a PURE ADAPTER —
-the single source of truth for every tool (name, description, JSON schema)
-stays in `tools.py` (the 6 investigation tools) and `prompts.py` (the two
-terminators). If a descriptor changes there, it changes here for free.
-
-Conversion: Anthropic's tool shape is
-    {"name", "description", "input_schema": <json-schema>}
-OpenAI's function shape is
-    {"type": "function", "function": {"name", "description", "parameters": <json-schema>}}
-The JSON schema body is identical, so this is a one-line wrap.
+Pure adapter. The tools stay defined in tools.py and prompts.py, so a descriptor
+change there flows through here for free.
 """
 
 from __future__ import annotations

@@ -1,17 +1,7 @@
-"""Manual structured tracing — Phase 1 observability.
+"""Manual structured tracing: print one JSON object per span to stdout.
 
-Cloud Logging on Cloud Run automatically parses stdout JSON into structured
-log entries. So all we need to do is print one JSON object per "span"
-(llm_call, tool_call) and we get queryable traces in the Cloud console.
-
-This is the muscle that becomes "drop in LangSmith" in Phase 2. Same data
-model, different transport.
-
-Usage from the agent loop:
-    with span("llm_call", session_id=sid, model="claude-sonnet-4") as s:
-        resp = await client.messages.create(...)
-        s.attach(tokens=resp.usage.input_tokens + resp.usage.output_tokens,
-                 stop_reason=resp.stop_reason)
+Cloud Logging on Cloud Run parses stdout JSON into structured, queryable log
+entries, so each span (llm_call, tool_call) becomes a trace with no extra wiring.
 """
 
 from __future__ import annotations

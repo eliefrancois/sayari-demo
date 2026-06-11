@@ -1,3 +1,4 @@
+// Small pill rendering one risk signal with severity-tiered color and a tooltip description.
 import { RISK_SIGNAL_META, type RiskSignal } from "@/lib/types";
 import { cn } from "@/lib/utils";
 

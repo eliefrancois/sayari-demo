@@ -1,8 +1,7 @@
-"""System prompt + the submit_summary "tool" used to enforce structured output.
+"""System prompt plus the submit_summary/submit_answer tools that enforce structured output.
 
-Why a submit_summary tool: Claude's tool-use mode lets us bind a Pydantic-validated
-schema as the structured-output channel. The agent calls this tool when it's done,
-and the arguments ARE the final RiskSummary. No prompt-engineering JSON parsing.
+The terminator tools bind a Pydantic-validated schema as the output channel: the
+agent calls one when it's done and the arguments are the final result, no JSON parsing.
 """
 
 SYSTEM_PROMPT = """You are an investigative copilot for corporate risk and ownership. You

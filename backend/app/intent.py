@@ -1,19 +1,9 @@
-"""Lightweight intent router — runs BEFORE the main agent loop.
+"""Lightweight intent router that runs before the main agent loop.
 
-A single cheap structured classification call labels the user's turn into one
-intent, which we use to (a) narrow/emphasize the INVESTIGATION-tool subset bound
-for that turn and (b) inject targeted guidance into the turn message. There is
-always a safe fallback to the full toolset when the classification is low-
-confidence (or the router is disabled / errors out), so a misclassification can
-never strand the agent without a tool it needs.
-
-Why a real classification step (vs prompt-only): the user explicitly chose this.
-It is observable (we log the chosen intent in the structured trace), keeps the
-main Sonnet loop focused on a smaller surface, and adds minimal latency/credits
-because it runs on a small/fast model with a tiny JSON-only output.
-
-This module is shared by BOTH agent implementations (native + graph), exactly
-like agent_common, so the two paths never drift on routing behavior.
+A cheap structured classification labels the turn's intent, then we narrow the
+bound tool subset and inject targeted guidance. Low confidence (or a disabled or
+erroring router) falls back to the full toolset, so a misclassification can never
+strand the agent. Shared by both agent impls so routing never drifts.
 """
 
 from __future__ import annotations

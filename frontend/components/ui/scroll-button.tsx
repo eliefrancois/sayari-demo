@@ -1,3 +1,4 @@
+// prompt-kit primitive: scroll-to-bottom button for chat containers.
 "use client"
 
 import { Button, buttonVariants } from "@/components/ui/button"

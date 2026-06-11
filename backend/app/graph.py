@@ -1,14 +1,8 @@
-"""Neo4j data layer.
+"""Neo4j data layer that owns all the Cypher.
 
-This module owns ALL Cypher. Other modules call Python functions here and never
-see a Cypher string. That separation means:
-  - If we swap Neo4j for TigerGraph tomorrow, only this file changes.
-  - If a query is slow, there's one place to look.
-  - If a Cypher pattern is wrong, the agent's behavior is unaffected — it just
-    gets back fewer/empty results.
-
-The queries are Cypher 5.x syntax. See docs/01-neo4j-and-cypher.md for the
-patterns and why each one is shaped the way it is.
+Other modules call Python functions here and never see a Cypher string, so the
+store is swappable and slow or wrong queries have one place to look. Queries are
+Cypher 5.x; see docs/01-neo4j-and-cypher.md for the patterns behind each one.
 """
 
 from __future__ import annotations

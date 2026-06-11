@@ -1,21 +1,13 @@
-"""Session state in Upstash Redis.
+"""Session state in Upstash Redis, the queue between POST /assess and GET /stream.
 
-Two-step handshake reason: browsers can't read SSE on a POST. So:
-  1. POST /assess  -> create session_id, queue an investigation
-  2. GET /stream/{id} -> read events as they're emitted
-
-This file is the queue between those two halves. Layout in Redis:
+Browsers can't read SSE on a POST, so /assess creates a session and queues the
+work, and /stream reads events as the agent emits them. Redis layout:
   session:{id}:state   -> "pending" | "running" | "done" | "error"
   session:{id}:input   -> the original user query
-  session:{id}:events  -> list of JSON-encoded StreamEvent dicts (appended by
-                          the agent, popped/iterated by the SSE endpoint)
+  session:{id}:events  -> list of JSON StreamEvent dicts (agent appends, SSE reads)
 
-Both keys have a TTL of 1h so we don't have to clean up. Demo investigations
-finish in <60s; 1h is generous.
-
-We use Upstash's REST API (not the raw Redis protocol). Two reasons: works
-cleanly from Cloud Run with no socket-pool issues, and the REST API supports
-the same primitives we need (SET, RPUSH, LRANGE, EXPIRE).
+Keys have a 1h TTL so there's nothing to clean up. We use Upstash's REST API
+(not raw Redis) so it works cleanly from Cloud Run with no socket-pool issues.
 """
 
 from __future__ import annotations
@@ -47,6 +39,7 @@ def _client() -> httpx.AsyncClient:
 
 
 def new_session_id() -> str:
+    """A fresh random session id."""
     return uuid.uuid4().hex
 
 
@@ -65,6 +58,7 @@ async def create_session(input_name: str) -> str:
 
 
 async def set_state(session_id: str, state: str) -> None:
+    """Set the session's lifecycle state, refreshing its TTL."""
     async with _client() as c:
         await c.post("/pipeline", json=[
             ["SET", f"session:{session_id}:state", state, "EX", str(_TTL_SECONDS)],
@@ -72,6 +66,7 @@ async def set_state(session_id: str, state: str) -> None:
 
 
 async def get_state(session_id: str) -> str | None:
+    """Read the session's lifecycle state, or None if it expired."""
     async with _client() as c:
         r = await c.get(f"/get/session:{session_id}:state")
         r.raise_for_status()

@@ -1,3 +1,4 @@
+// shadcn primitive: styled textarea.
 import * as React from "react"
 
 import { cn } from "@/lib/utils"

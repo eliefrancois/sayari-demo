@@ -1,17 +1,9 @@
-"""Agent facade — dispatches a conversation turn to the active implementation.
+"""Agent facade that dispatches a conversation turn to the active implementation.
 
-The implementation is chosen at runtime by `settings.agent_impl`:
-  - "native" (default): the hand-rolled Anthropic loop in agent_native. Proven;
-    the safe demo default.
-  - "graph": the LangChain + LangGraph StateGraph in agent_graph. Same SSE
-    contract and Redis writes, plus LangSmith tracing.
-
-Both expose an identical `run_turn(...)` signature, so flipping AGENT_IMPL is
-the only change needed to swap engines. Read the setting per-call so an env
-change takes effect without a process restart (and so tests can monkeypatch).
-
-The legacy single-shot path (POST /assess -> agent_native.run_investigation)
-is intentionally untouched and always native.
+`settings.agent_impl` picks "native" (the hand-rolled Anthropic loop, the demo
+default) or "graph" (the LangGraph StateGraph, same SSE/Redis contract plus
+tracing and branching). Both expose the same run_turn signature, and the setting
+is read per-call so flipping AGENT_IMPL needs no restart.
 """
 
 from __future__ import annotations
@@ -30,6 +22,7 @@ async def run_turn(
     parent_turn_id: str | None = None,
     model: str | None = None,
 ) -> None:
+    """Run one conversation turn through the native or graph implementation."""
     impl = get_settings().agent_impl
     if impl == "graph":
         # Branching (Stage 2a) is a graph-impl feature: the tree coordinates are

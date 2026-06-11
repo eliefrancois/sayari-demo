@@ -1,3 +1,4 @@
+// prompt-kit primitive: composer input shell (textarea + actions).
 "use client"
 
 import { Textarea } from "@/components/ui/textarea"

@@ -1,45 +1,11 @@
-"""LangSmith evaluation runner for the Entity Risk Resolver agent.
+"""LangSmith evaluation runner: score the real agent against the golden `sayari-demo` dataset.
 
-Pulls the live `sayari-demo` golden dataset from LangSmith, runs each example's
-`inputs.message` through the REAL agent turn (`agent_graph.evaluate_turn`), and
-scores the structured terminator output with reference-based evaluators that
-grade against the example `outputs`. Adds an optional Anthropic LLM judge
-(faithfulness / coverage vs `reference_answer`) plus two standalone extra evals
-(recall-over-distance and a token-budget guardrail).
-
-Reference-based evaluators (score vs example.outputs):
-  - terminator_kind_match    expected_kind (answer vs summary) == which terminator fired
-  - found_match              found bool matches (derived for answer turns)
-  - report_ready_match       report_ready matches (summary => report produced)
-  - sanctions_status_match   resolved sanctions label matches, respecting labeling
-                             discipline (sanctioned / not_sanctioned / non_sdn /
-                             name_collision dispatch to the right structured check)
-  - expected_entities_recall fraction of expected_entities present in the answer
-  - must_not_absent          structural guards: no false sanctions/SDN promotion,
-                             no fabricated claims on not-found/clarify rows
-
-Per-example `metadata.checks` are ALSO scored by reusing the exact check logic in
-`run_evals.EVALUATORS` (each self-skips the rows it doesn't apply to), so the
-LangSmith grid mirrors the local regression suite.
-
-Modes (dry-run is the default and spends NO credits):
-  # dry-run: load the dataset, validate evaluators are well-formed against a real
-  # reference example, and run the two deterministic extra evals. Proves wiring.
-  .venv/bin/python -m evals.langsmith_eval
-
-  # full live run uploaded to LangSmith (hits the live agent; spends Anthropic):
-  .venv/bin/python -m evals.langsmith_eval --live
-
-  # add the Anthropic LLM judge (faithfulness/coverage vs reference_answer):
-  .venv/bin/python -m evals.langsmith_eval --live --judge
-
-  # cheap smoke: one live example, no judge:
-  .venv/bin/python -m evals.langsmith_eval --live --limit 1
-
-Env (names only; never printed/logged):
-  LANGCHAIN_API_KEY    required (dataset pull + experiment upload)
-  ANTHROPIC_API_KEY    required only for --live and --judge
-  LANGCHAIN_PROJECT    optional (defaults to entity-risk-resolver)
+Runs each example's message through `agent_graph.evaluate_turn` and grades the
+structured output with reference-based evaluators (terminator kind, found,
+report_ready, sanctions label, entity recall, must-not guards), the reused
+`run_evals` checks, and an optional Anthropic LLM judge. Dry-run is the default
+and spends no credits; `--live` uploads a real experiment and `--judge` adds the
+faithfulness judge.
 """
 
 from __future__ import annotations
@@ -81,12 +47,7 @@ _RUN_MODEL: str | None = None
 
 
 def _model_tag(model_id: str) -> str:
-    """Derive a short, stable experiment tag from a full Anthropic model id so
-    each model's run shows up as a clearly-named experiment under the dataset:
-      claude-sonnet-4-5-20250929 -> sonnet-4-5
-      claude-haiku-4-5-20251001  -> haiku-4-5
-    Drops the `claude` prefix and the trailing YYYYMMDD snapshot, then orders the
-    family word ahead of its version numbers regardless of source ordering."""
+    """Short experiment tag from a model id, e.g. claude-sonnet-4-5-20250929 -> sonnet-4-5."""
     parts = [p for p in model_id.split("-") if p != "claude"]
     if parts and parts[-1].isdigit() and len(parts[-1]) == 8:
         parts = parts[:-1]
@@ -101,6 +62,7 @@ def _model_tag(model_id: str) -> str:
 
 
 def _result(out: dict[str, Any]) -> dict[str, Any]:
+    """The terminator result payload from an evaluate_turn output."""
     return out.get("result") or {}
 
 
@@ -166,10 +128,12 @@ async def target(inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ref(example: Any) -> dict[str, Any]:
+    """The reference outputs on a golden example."""
     return (getattr(example, "outputs", None) or {})
 
 
 def terminator_kind_match(outputs: dict[str, Any], example: Any) -> dict[str, Any]:
+    """The terminator that fired matches the example's expected_kind."""
     exp = _ref(example).get("expected_kind")
     got = outputs.get("kind")
     return {"key": "terminator_kind_match", "score": int(exp == got),
@@ -177,6 +141,7 @@ def terminator_kind_match(outputs: dict[str, Any], example: Any) -> dict[str, An
 
 
 def found_match(outputs: dict[str, Any], example: Any) -> dict[str, Any]:
+    """The derived found bool matches the example's expectation."""
     exp = bool(_ref(example).get("found"))
     got = _derive_found(outputs)
     return {"key": "found_match", "score": int(exp == got),
@@ -184,6 +149,7 @@ def found_match(outputs: dict[str, Any], example: Any) -> dict[str, Any]:
 
 
 def report_ready_match(outputs: dict[str, Any], example: Any) -> dict[str, Any]:
+    """The derived report_ready flag matches the example's expectation."""
     exp = bool(_ref(example).get("report_ready"))
     got = _derive_report_ready(outputs)
     return {"key": "report_ready_match", "score": int(exp == got),
@@ -202,6 +168,7 @@ _SANCTIONS_DISPATCH: dict[str, Callable[[dict[str, Any]], tuple[bool, str]]] = {
 
 
 def sanctions_status_match(outputs: dict[str, Any], example: Any) -> dict[str, Any]:
+    """Grade the resolved sanctions label via the structured check for its discipline."""
     exp = _ref(example).get("sanctions_status")
     fn = _SANCTIONS_DISPATCH.get(exp)
     if fn is None:
@@ -213,6 +180,7 @@ def sanctions_status_match(outputs: dict[str, Any], example: Any) -> dict[str, A
 
 
 def expected_entities_recall(outputs: dict[str, Any], example: Any) -> dict[str, Any]:
+    """Fraction of the example's expected_entities present in the answer text."""
     expected = _ref(example).get("expected_entities") or []
     if not expected:
         return {"key": "expected_entities_recall", "score": 1.0,
@@ -705,6 +673,7 @@ async def run_live(limit: int | None, judge: bool) -> int:
 
 
 def main() -> None:
+    """CLI entry point: parse flags and run the dry-run or live LangSmith experiment."""
     parser = argparse.ArgumentParser(description="LangSmith eval runner for the ERR agent.")
     parser.add_argument("--live", action="store_true",
                         help="Run the live agent + upload an experiment (spends Anthropic credits).")

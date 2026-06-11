@@ -1,29 +1,9 @@
-"""Multi-turn memory eval harness (Investigation Memory Subsystem, doc 09 §F).
+"""Multi-turn memory eval harness: a finding survives the write path and is recallable.
 
-This is the safety net that locks in Phases A-E: it runs N SEQUENTIAL turns in
-ONE conversation, persisting `state_doc` between turns EXACTLY as production does
-(`conversations._apply_delta`, the pure core `merge_state_doc` runs), then asserts
-on later-turn RECALL behavior — specifically that a finding survives the write
-path and is recoverable WITHOUT re-running the tool that produced it.
-
-Why it is deterministic + CI-friendly (no Redis, no live model, no credits):
-
-  - The turn-1 "investigation" is expressed as the structured graph state
-    `finalize_node` hands to `agent_graph._build_state_delta` — the SAME
-    projection production persists. So we exercise the real write path.
-  - Turns are persisted with `conversations._apply_delta` into an in-memory doc,
-    the identical transformation `merge_state_doc` writes to Redis.
-  - Later-turn recall is exercised through the REAL `recall_state_tool` by
-    pointing `conversations.get_state_doc` at the in-memory persisted doc, plus
-    the real `build_followup_prefetch` / `build_context_block` read surfaces.
-
-The brief (doc 09 §11) calls for the concrete Rosneft regression and the IMS
-invariant encoded as a reusable check; both live here. The live-model routing
-("is turn 2 labeled a follow-up, does the model avoid check_sanctions") is NOT
-re-tested here on purpose: it is flaky and slow, and the deterministic guarantee
-is stronger — the dismissed subsidiary is recoverable from durable state via a
-ZERO-CREDIT memory read (recall_state / the prefetch), so a correct turn 2 has no
-reason to re-spend check_sanctions. We assert that guarantee directly.
+Runs N sequential turns in one conversation, persisting `state_doc` between turns
+exactly as production does (`_apply_delta`), then asserts later-turn recall works
+without re-running the tool that produced it. Deterministic and CI-friendly: no
+Redis, no live model, no credits, exercising the real write and recall paths.
 """
 
 from __future__ import annotations

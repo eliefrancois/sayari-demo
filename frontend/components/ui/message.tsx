@@ -1,3 +1,4 @@
+// prompt-kit primitive: chat message layout (avatar, content, actions).
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
   Tooltip,

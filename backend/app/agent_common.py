@@ -1,12 +1,8 @@
-"""Shared agent helpers used by BOTH the native loop and the LangGraph impl.
+"""Shared agent helpers used by both the native loop and the LangGraph impl.
 
-Extracted from agent_native.py so the two implementations stay byte-for-byte
-identical on the parts that have nothing to do with control flow: the model
-id, the compressed-context builder, the per-turn digests that feed episodic
-memory, the one-line tool-result summaries, and the sanctions-review diff.
-
-Keeping these here means a behavior fix (e.g. a context-block tweak) lands in
-native and graph at once — no drift between the two code paths.
+Holds everything unrelated to control flow (the model id, the context builder,
+per-turn digests, tool-result summaries, the sanctions-review diff) so a behavior
+fix lands in both code paths at once and they never drift.
 """
 
 from __future__ import annotations
@@ -30,6 +26,7 @@ _DIRECT_RISK_NAMES = {"state_owned", "export_controls", "usa_bis", "pep"}
 
 
 def _level_rank(level: str | None) -> int:
+    """Sort key for a risk level (lower = more severe); unknown levels sort last."""
     return _LEVEL_RANK.get((level or "").lower(), 99)
 
 
@@ -638,6 +635,7 @@ def build_followup_prefetch(
 
 
 def digest_summary(turn_index: int, s: RiskSummary) -> str:
+    """One-line digest of an investigation summary for the prior-context block."""
     top_claims = "; ".join(c.text for c in s.claims[:2]) if s.claims else "none"
     signals = ", ".join(s.risk_signals) if s.risk_signals else "none"
     sanc = len(s.sanctions_hits)
@@ -649,6 +647,7 @@ def digest_summary(turn_index: int, s: RiskSummary) -> str:
 
 
 def digest_answer(turn_index: int, user_message: str, a: TurnAnswer) -> str:
+    """One-line digest of a follow-up/clarification answer for the prior-context block."""
     snippet = a.answer.strip().replace("\n", " ")
     if len(snippet) > 220:
         snippet = snippet[:220] + "..."

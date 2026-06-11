@@ -1,3 +1,4 @@
+// Root client component: wires the conversation store, SSE streams, time-travel, and the canvas/graph layout.
 "use client";
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";

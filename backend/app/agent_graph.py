@@ -1,27 +1,14 @@
-"""Phase 5 agent: idiomatic LangChain + LangGraph implementation.
-
-This is the same agent as `agent_native.run_turn`, expressed as a graph. The
-native loop's shape — call model, parse tool calls, run tools, append results,
-repeat until a terminator (or bare text) — maps onto three nodes:
+"""LangChain + LangGraph agent: the same loop as agent_native.run_turn, as a graph.
 
     START -> agent --(tool_calls)--> tools --(more tools)--> agent
                   \\--(text only)---------------------------\\
                                                              v
              tools --(terminator)--> finalize -> END   <----/
 
-Two design choices keep this 100% compatible with the existing frontend:
-
-  1. The model call is pure LangChain (`ChatAnthropic.bind_tools`), so LangSmith
-     traces every node + LLM call for free once LANGCHAIN_TRACING_V2 is set.
-  2. The `tools` node is a CUSTOM node (not the prebuilt `ToolNode`) because it
-     has to do more than execute functions: it emits our SSE event contract
-     (tool_call_start / tool_call_result / sanctions_hit) and accumulates the
-     graph delta + raw watchlist hits. Custom nodes are standard LangGraph.
-
-Everything that isn't control flow (context block, digests, sanctions review,
-graph suppression) is imported from agent_common, so native and graph never
-drift. The public `run_turn` signature matches agent_native.run_turn exactly,
-so the facade can swap them behind the AGENT_IMPL flag.
+The model call is pure LangChain so LangSmith traces everything for free, and the
+`tools` node is custom (not the prebuilt ToolNode) because it also emits our SSE
+contract and accumulates the graph delta. Control-flow-agnostic helpers come from
+agent_common so native and graph never drift.
 """
 
 from __future__ import annotations
@@ -130,6 +117,7 @@ _COMPILED: Any = None
 
 
 def _base_llm(model: str):
+    """The ChatAnthropic client for a model, cached per model id."""
     llm = _LLM_CACHE.get(model)
     if llm is None:
         llm = ChatAnthropic(
@@ -165,6 +153,7 @@ def _bound_llm(tool_names: list[str] | None = None, model: str | None = None):
 
 
 async def _emit(conversation_id: str, turn_index: int, type_: str, **data: Any) -> None:
+    """Append an SSE event to the conversation queue, tagged with its turn_index."""
     payload = dict(data)
     payload["turn_index"] = turn_index
     await conversations.append_event(conversation_id, {"type": type_, "data": payload})
@@ -209,6 +198,7 @@ _STREAM_FLUSH_CHARS = 48  # batch text deltas to keep Redis writes reasonable
 
 
 def _terminator_text_field(name: str | None) -> str | None:
+    """The terminator arg whose value streams as the user-facing answer, if any."""
     return _TERMINATOR_TEXT_FIELD.get(name or "")
 
 
@@ -950,6 +940,7 @@ def _route_after_tools(state: TurnState) -> str:
 
 
 def _graph():
+    """The compiled agent/tools/finalize StateGraph, built once and cached."""
     global _COMPILED
     if _COMPILED is None:
         builder = StateGraph(TurnState)
@@ -982,6 +973,7 @@ def _initial_state(
     parent_turn_id: str | None = None,
     model: str | None = None,
 ) -> TurnState:
+    """Build the initial TurnState the graph runs on for one turn."""
     return {
         "messages": [
             # System prompt as a cached text block: an ephemeral cache breakpoint

@@ -1,11 +1,8 @@
-# Frontend — Entity Risk Resolver
+# Frontend
 
-Next.js 16 (App Router) UI for the investigation agent. Three panels:
-- **Chat** — user input + summary card
-- **Graph** — React Flow canvas, custom nodes per ICIJ type, live build-up as the agent traverses
-- **Tool-call feed** — live event log of every tool call, sanctions hit, etc.
+Next.js app that renders the investigation as a branching canvas. Each turn is a node you can fork from, and the agent's reasoning, tool calls, and evidence graph build up live as the backend streams them over SSE.
 
-## Local run
+## Run locally
 
 ```bash
 cd frontend
@@ -14,15 +11,30 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000`. Point `NEXT_PUBLIC_BACKEND_URL` at your local backend (`http://localhost:8080`) or the Cloud Run URL.
+
+## Key directories
+
+- `app/` — App Router entry (`page.tsx`, `layout.tsx`, global styles).
+- `components/canvas/` — the React Flow investigation canvas: turn nodes, tool-call blocks, group overlays.
+- `components/` — the cards and panels: answer card, risk summary, entity detail, evidence graph, trade-routes map.
+- `components/manager/` — the conversation history menu (list, search, delete).
+- `components/ui/` — shadcn and prompt-kit primitives.
+- `lib/` — the non-UI logic: `sse-client.ts` (SSE consumption), `conversation-store.ts` (state), `canvas-layout.ts` and `groupClustering.ts` (graph layout and subject grouping), `report-pdf.ts` (PDF export), `types.ts`.
+
+## Env vars
+
+See `.env.local.example`. Only one:
+
+- `NEXT_PUBLIC_BACKEND_URL` — the backend base URL.
 
 ## Deploy to Vercel
 
-Imported from GitHub. Root directory: `frontend/`. Env var: `NEXT_PUBLIC_BACKEND_URL` pointing at the Cloud Run URL.
+Imported from GitHub, root directory `frontend/`. Set `NEXT_PUBLIC_BACKEND_URL` to the Cloud Run URL. Pushes to `main` deploy automatically.
 
 ## Stack
 
 - Next.js 16 (App Router), TypeScript, React 19
 - Tailwind CSS v4
-- React Flow (`@xyflow/react`) for the graph canvas
-- Native `EventSource` for SSE consumption
+- React Flow (`@xyflow/react`) for the canvas, d3-force for layout
+- Native `EventSource` for SSE

@@ -1,3 +1,4 @@
+// prompt-kit primitive: inline source-citation link with a hover preview.
 "use client"
 
 import {

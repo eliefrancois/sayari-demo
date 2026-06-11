@@ -1,16 +1,8 @@
-"""Dual-use HS-code screen (Tier 2).
+"""Dual-use HS-code screen: match Sayari shipment HS codes against a curated list.
 
-Sayari ships HS codes on every shipment (`shipment.hs_codes[].code`, 6-digit) but
-has NO per-code dual-use flag. So we screen those codes against a BUNDLED, curated
-reference list — the BIS/E5 Common High Priority List (CHPL) — and label any hit
-as coming from "our HS screen". This is deliberately separate from Sayari's NATIVE
-risk tags (the party `risks` dict carries `exports_bis_high_priority_items_*`,
-`owner_of_usa_bis_entity`, etc.); the tool surfaces both and keeps their
-provenance distinct so an analyst knows which signal is ours vs Sayari's.
-
-The reference list lives as a static JSON asset (`data/hs_dual_use.json`) and is
-structured so additional lists (e.g. EU dual-use Annex I) can be appended with
-their own `list` id without changing this code.
+Sayari ships 6-digit HS codes but no per-code dual-use flag, so we screen them
+against a bundled reference (BIS/E5 CHPL, `data/hs_dual_use.json`) and tag hits
+as "our HS screen", kept provenance-distinct from Sayari's own native BIS tags.
 """
 
 from __future__ import annotations

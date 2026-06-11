@@ -1,3 +1,4 @@
+// Markdown renderer that turns bolded known-entity names into clickable links to the graph + detail panel.
 import { cn } from "@/lib/utils"
 import type { EntityMatch } from "@/lib/entity-lookup"
 import { marked } from "marked"

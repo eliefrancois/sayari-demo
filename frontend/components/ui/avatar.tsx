@@ -1,3 +1,4 @@
+// shadcn/base-ui primitive: avatar with image + fallback.
 "use client"
 
 import * as React from "react"

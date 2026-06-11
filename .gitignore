@@ -46,6 +46,10 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 
+# Internal working docs (kept local, not shipped). The relocated assets/ at the
+# repo root and PROJECT_SUMMARY.md stay tracked - this only ignores docs/.
+docs/
+
 # Eval outputs
 backend/evals/results/
 

@@ -1,15 +1,7 @@
-"""Phase 1 agent: hand-rolled Anthropic tool-use loop.
+"""Hand-rolled Anthropic tool-use loop: request, run tools, repeat until a terminator.
 
-Reads top-to-bottom as a teaching artifact. Phase 2 (LangGraph) would replace
-this file with one of comparable length but the SHAPE of the loop — request,
-parse tool_use blocks, execute tools, append tool_results, repeat until
-submit_summary — is the same. LangGraph just gives you graph-shaped control
-flow, retries, durable state, and observability hooks for free.
-
-Public entry point: run_investigation(session_id, user_query)
-  - Spawned as a background task from POST /assess.
-  - Emits SSE events into Upstash via app.sessions.
-  - The /stream/:id endpoint reads them out independently.
+The native agent impl behind POST /assess (run_investigation) and conversation
+turns (run_turn). Emits SSE events into Upstash; the stream endpoints read them out.
 """
 
 from __future__ import annotations
@@ -324,6 +316,7 @@ async def _emit_sanctions_review(
 
 
 async def _emit_conv(conversation_id: str, turn_index: int, type_: str, **data: Any) -> None:
+    """Append an SSE event to the conversation queue, tagged with its turn_index."""
     payload = dict(data)
     payload["turn_index"] = turn_index
     await conversations.append_event(conversation_id, {"type": type_, "data": payload})
@@ -664,6 +657,7 @@ async def _emit_sanctions_review_conv(
     summary: RiskSummary,
     raw_strong_hits: list[dict[str, Any]],
 ) -> None:
+    """Emit a sanctions-review event for a conversation turn, if there's a gap to flag."""
     review = build_sanctions_review(summary, raw_strong_hits)
     if review is None:
         return

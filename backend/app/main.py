@@ -1,13 +1,7 @@
-"""FastAPI app — wires the API surface to the agent + Upstash + Neo4j.
+"""FastAPI app that wires the API surface to the agent, Upstash, and Neo4j.
 
-Three endpoints:
-  POST /assess           : start an investigation, returns {session_id}
-  GET  /stream/{id}      : SSE stream of events for that session
-  GET  /health           : liveness + dependency status (Cloud Run probe)
-
-This module is thin by design. Its job is HTTP plumbing. Investigation logic
-lives in app.agent_native; data access lives in app.graph + app.sanctions;
-event queue lives in app.sessions.
+HTTP plumbing only. Investigation logic lives in app.agent_native, data access
+in app.graph + app.sanctions, and the event queue in app.sessions.
 """
 
 from __future__ import annotations
@@ -208,6 +202,7 @@ class ConversationListResponse(BaseModel):
 
 @app.post("/conversations", response_model=CreateConversationResponse)
 async def create_conversation() -> CreateConversationResponse:
+    """Create an empty conversation and return its id."""
     cid = await conversations.create_conversation()
     return CreateConversationResponse(conversation_id=cid)
 
@@ -446,5 +441,6 @@ async def stream(session_id: str) -> EventSourceResponse:
 
 
 def _json_dump(data: object) -> str:
+    """Serialize an SSE data payload to a JSON string."""
     import json
     return json.dumps(data, default=str)

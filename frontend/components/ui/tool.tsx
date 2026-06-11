@@ -1,3 +1,4 @@
+// prompt-kit primitive: collapsible tool-call display.
 "use client"
 
 import { Button } from "@/components/ui/button"

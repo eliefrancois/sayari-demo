@@ -1,24 +1,9 @@
-"""Sayari Graph API data layer.
+"""Sayari Graph API data layer that owns all the Sayari SDK calls.
 
-Mirrors graph.py (Neo4j) and sanctions.py (OpenSanctions): this module owns ALL
-Sayari SDK calls and the mapping from Sayari shapes into our app shapes. Other
-modules call Python functions here and never touch the SDK.
-
-The three calls we use (see docs/03-sayari-data-model.md):
-  - resolution.resolution(name, address, country)  -> ranked CANDIDATES
-  - entity.get_entity(id)                            -> full EntityDetails
-  - traversal.ownership(id) / traversal.ubo(id)      -> ownership/control paths
-
-Auth, token rotation, and 429 retry-after are handled inside the SDK — we do
-not hand-roll any of it.
-
-Design rules baked in here:
-  - resolve() returns candidates, NOT an answer. The agent disambiguates.
-  - We never return the raw risk map; slimming happens in agent_common via
-    slim_sayari_profile (the tool layer calls it).
-  - Ownership results and risk traversal paths map onto the same Neighborhood
-    node/edge shape the ICIJ tools use, tagged source_system="sayari" so the
-    frontend graph can color and legend them.
+Mirrors graph.py and sanctions.py: other modules call functions here and never
+touch the SDK (auth, token rotation, and 429 retry live inside it). resolve()
+returns candidates, not an answer; ownership and risk paths map onto the same
+Neighborhood shape the ICIJ tools use, tagged source_system="sayari".
 """
 
 from __future__ import annotations
@@ -204,6 +189,7 @@ def _node(
     *,
     properties: dict[str, Any] | None = None,
 ) -> GraphNode:
+    """Build a source_system="sayari" GraphNode."""
     return GraphNode(
         id=entity_id,
         label=label,  # type: ignore[arg-type]
@@ -708,6 +694,7 @@ def _add_edge(
     rel: str,
     properties: dict[str, Any] | None = None,
 ) -> None:
+    """Add a Sayari edge to the dict, deduped by (source, rel, target)."""
     key = f"{src}::{rel}::{tgt}"
     if key not in edges:
         edges[key] = GraphEdge(

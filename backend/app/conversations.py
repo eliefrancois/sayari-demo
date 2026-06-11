@@ -1,8 +1,7 @@
-"""Multi-turn conversation state in Upstash Redis.
+"""Multi-turn conversation state in Upstash Redis: the product-persistence layer.
 
-This is the product-persistence layer (distinct from any future LangGraph
-agent-runtime checkpointing). It holds everything the UI needs to render and
-resume an investigation across turns and page reloads:
+Holds everything the UI needs to render and resume an investigation across turns
+and page reloads. Redis key layout:
 
   conversation:{id}:meta        -> JSON {title, created_at, updated_at, turn_count}
   conversation:{id}:state       -> "idle" | "running" | "error"
@@ -37,16 +36,10 @@ chain whose folded state is byte-identical to the merged doc:
                                             tree-aware turn lands on a
                                             conversation with pre-tree turns
 
-Design notes:
-  - Append-only lists use RPUSH; wholesale-replaced values use SET.
-  - Every write refreshes the 24h TTL so an active conversation never expires
-    mid-session, and abandoned ones self-clean.
-  - Cross-turn continuity comes from two complementary tiers: the compressed
-    prose `context` digest (narrative) and the structured `state_doc` (exact,
-    ID-rich recall of resolved entities, full lead lists, and sanctions
-    verdicts). This is the industry-standard episodic-memory pattern
-    (Mem0/SimpleMem-style): structured summaries beat replaying every raw
-    tool_result, which bloats tokens and degrades quality.
+Every write refreshes the 24h TTL so active conversations don't expire mid-session
+and abandoned ones self-clean. Cross-turn continuity comes from two tiers: the
+compressed prose `context` digest and the structured `state_doc` for exact,
+ID-rich recall, which beats replaying every raw tool_result.
 """
 
 from __future__ import annotations
@@ -70,6 +63,7 @@ _LOCK_TTL_SECONDS = 300  # a turn must finish (or crash) within 5 min
 
 
 def _client() -> httpx.AsyncClient:
+    """One-shot Upstash REST client."""
     s = get_settings()
     return httpx.AsyncClient(
         base_url=s.upstash_redis_rest_url,
@@ -79,6 +73,7 @@ def _client() -> httpx.AsyncClient:
 
 
 def _k(conversation_id: str, suffix: str) -> str:
+    """Build a per-conversation Redis key from its suffix."""
     return f"conversation:{conversation_id}:{suffix}"
 
 
@@ -100,6 +95,7 @@ _STATIC_SUFFIXES = (
 
 
 def new_conversation_id() -> str:
+    """A fresh random conversation id."""
     return uuid.uuid4().hex
 
 
@@ -107,6 +103,7 @@ def new_conversation_id() -> str:
 
 
 async def create_conversation(title: str = "New investigation") -> str:
+    """Create an empty conversation (meta, state, graph, index entry) and return its id."""
     cid = new_conversation_id()
     now = int(time.time())
     meta = {"title": title, "created_at": now, "updated_at": now, "turn_count": 0}
@@ -122,6 +119,7 @@ async def create_conversation(title: str = "New investigation") -> str:
 
 
 async def exists(conversation_id: str) -> bool:
+    """True if the conversation's meta key is still present."""
     async with _client() as c:
         r = await c.get(f"/exists/{_k(conversation_id, 'meta')}")
         r.raise_for_status()
@@ -129,6 +127,7 @@ async def exists(conversation_id: str) -> bool:
 
 
 async def get_state(conversation_id: str) -> str | None:
+    """Read the conversation's lifecycle state, or None if expired."""
     async with _client() as c:
         r = await c.get(f"/get/{_k(conversation_id, 'state')}")
         r.raise_for_status()
@@ -136,6 +135,7 @@ async def get_state(conversation_id: str) -> str | None:
 
 
 async def set_state(conversation_id: str, state: str) -> None:
+    """Set the conversation's lifecycle state, refreshing its TTL."""
     async with _client() as c:
         await c.post("/pipeline", json=[
             ["SET", _k(conversation_id, "state"), state, "EX", str(_TTL_SECONDS)],
@@ -160,11 +160,13 @@ async def acquire_lock(conversation_id: str) -> bool:
 
 
 async def release_lock(conversation_id: str) -> None:
+    """Release the per-conversation turn lock."""
     async with _client() as c:
         await c.post("/pipeline", json=[["DEL", _k(conversation_id, "lock")]])
 
 
 async def is_locked(conversation_id: str) -> bool:
+    """True if a turn currently holds the lock."""
     async with _client() as c:
         r = await c.get(f"/exists/{_k(conversation_id, 'lock')}")
         r.raise_for_status()
@@ -193,6 +195,7 @@ _TURN_SCOPE: ContextVar[tuple[str, str, str | None] | None] = ContextVar(
 def turn_scope(
     conversation_id: str, turn_id: str, parent_turn_id: str | None
 ) -> Iterator[None]:
+    """Run a block with the active turn's tree coordinates, so reads stay path-scoped."""
     token = _TURN_SCOPE.set((conversation_id, turn_id, parent_turn_id))
     try:
         yield
@@ -212,6 +215,7 @@ def _active_scope(conversation_id: str) -> tuple[str, str | None] | None:
 
 
 async def append_event(conversation_id: str, event: dict[str, Any]) -> None:
+    """Append an SSE event, stamping the active turn's tree coordinates onto it."""
     # Stamp the active turn's tree coordinates onto every event so the frontend
     # can attach streaming events to the right branch card without a lookup.
     scope = _active_scope(conversation_id)
@@ -227,6 +231,7 @@ async def append_event(conversation_id: str, event: dict[str, Any]) -> None:
 
 
 async def read_events(conversation_id: str, start: int = 0) -> list[dict[str, Any]]:
+    """Read events from index `start` onward (the SSE poll cursor)."""
     async with _client() as c:
         r = await c.get(f"/lrange/{_k(conversation_id, 'events')}/{start}/-1")
         r.raise_for_status()
@@ -235,6 +240,7 @@ async def read_events(conversation_id: str, start: int = 0) -> list[dict[str, An
 
 
 async def event_count(conversation_id: str) -> int:
+    """Current length of the event list (the next turn's start cursor)."""
     async with _client() as c:
         r = await c.get(f"/llen/{_k(conversation_id, 'events')}")
         r.raise_for_status()
@@ -245,6 +251,7 @@ async def event_count(conversation_id: str) -> int:
 
 
 async def append_turn(conversation_id: str, turn: dict[str, Any]) -> None:
+    """Append a turn metadata record."""
     key = _k(conversation_id, "turns")
     async with _client() as c:
         await c.post("/pipeline", json=[
@@ -254,6 +261,7 @@ async def append_turn(conversation_id: str, turn: dict[str, Any]) -> None:
 
 
 async def append_summary(conversation_id: str, summary: dict[str, Any]) -> None:
+    """Append a RiskSummary dict from an investigation turn."""
     key = _k(conversation_id, "summaries")
     async with _client() as c:
         await c.post("/pipeline", json=[
@@ -263,6 +271,7 @@ async def append_summary(conversation_id: str, summary: dict[str, Any]) -> None:
 
 
 async def append_answer(conversation_id: str, answer: dict[str, Any]) -> None:
+    """Append a TurnAnswer dict from a follow-up turn."""
     key = _k(conversation_id, "answers")
     async with _client() as c:
         await c.post("/pipeline", json=[
@@ -272,6 +281,7 @@ async def append_answer(conversation_id: str, answer: dict[str, Any]) -> None:
 
 
 async def _read_list(conversation_id: str, suffix: str) -> list[dict[str, Any]]:
+    """Read a whole JSON list value at a key suffix."""
     async with _client() as c:
         r = await c.get(f"/lrange/{_k(conversation_id, suffix)}/0/-1")
         r.raise_for_status()
@@ -283,6 +293,7 @@ async def _read_list(conversation_id: str, suffix: str) -> list[dict[str, Any]]:
 
 
 async def get_context(conversation_id: str) -> str:
+    """Read the compressed prose context digest."""
     async with _client() as c:
         r = await c.get(f"/get/{_k(conversation_id, 'context')}")
         r.raise_for_status()
@@ -290,6 +301,7 @@ async def get_context(conversation_id: str) -> str:
 
 
 async def set_context(conversation_id: str, text: str) -> None:
+    """Replace the compressed prose context digest."""
     async with _client() as c:
         await c.post("/pipeline", json=[
             ["SET", _k(conversation_id, "context"), text, "EX", str(_TTL_SECONDS)],
@@ -376,6 +388,7 @@ _ENTITY_SOURCE_RANK: dict[str, int] = {
 
 
 def _source_rank(src: str | None) -> int:
+    """Authority rank of a source label (higher wins a label merge)."""
     return _ENTITY_SOURCE_RANK.get((src or "").strip().lower(), 1)
 
 
@@ -428,6 +441,7 @@ def entity_severity_score(e: dict[str, Any]) -> float:
 
 
 def _merge_countries(a: Any, b: Any) -> list[str]:
+    """Union two country lists, order-preserving and deduped."""
     out: list[str] = []
     seen: set[str] = set()
     for src in (a or [], b or []):
@@ -859,6 +873,7 @@ async def merge_state_doc(conversation_id: str, delta: dict[str, Any]) -> dict[s
 
 
 async def get_graph(conversation_id: str) -> dict[str, list]:
+    """Read the accumulated conversation graph, or an empty {nodes, edges}."""
     async with _client() as c:
         r = await c.get(f"/get/{_k(conversation_id, 'graph')}")
         r.raise_for_status()
@@ -950,6 +965,7 @@ _TREE_MAX_DEPTH = 500  # cycle guard for parent-pointer walks
 
 
 def new_turn_id() -> str:
+    """A short random turn id for the tree."""
     return uuid.uuid4().hex[:12]
 
 
@@ -973,6 +989,7 @@ async def get_turn_tree(conversation_id: str) -> dict[str, dict[str, Any]]:
 
 
 async def _write_tree_entry(conversation_id: str, entry: dict[str, Any]) -> None:
+    """Upsert one turn's tree entry in the turn_tree hash."""
     key = _k(conversation_id, "turn_tree")
     async with _client() as c:
         await c.post("/pipeline", json=[
@@ -1060,6 +1077,7 @@ async def register_turn(
 
 
 def _empty_tree_base() -> dict[str, Any]:
+    """The empty fold base (state_doc, graph, context) for a fresh tree."""
     return {"state_doc": _empty_state_doc(), "graph": {"nodes": [], "edges": []}, "context": ""}
 
 
@@ -1078,6 +1096,7 @@ async def _snapshot_tree_base(conversation_id: str) -> None:
 
 
 async def _get_tree_base(conversation_id: str) -> dict[str, Any]:
+    """Read the pre-branching fold base, or the empty base if none was snapshotted."""
     async with _client() as c:
         r = await c.get(f"/get/{_k(conversation_id, 'tree_base')}")
         r.raise_for_status()
@@ -1102,6 +1121,7 @@ async def _get_tree_base(conversation_id: str) -> dict[str, Any]:
 async def _append_turn_delta(
     conversation_id: str, turn_id: str, delta: dict[str, Any]
 ) -> None:
+    """Record a state-doc delta under this turn so its path fold is reconstructable."""
     key = _k(conversation_id, f"turn_delta:{turn_id}")
     async with _client() as c:
         await c.post("/pipeline", json=[
@@ -1111,6 +1131,7 @@ async def _append_turn_delta(
 
 
 async def read_turn_deltas(conversation_id: str, turn_id: str) -> list[dict[str, Any]]:
+    """Read the state-doc deltas recorded for one turn, in order."""
     async with _client() as c:
         r = await c.get(f"/lrange/{_k(conversation_id, f'turn_delta:{turn_id}')}/0/-1")
         r.raise_for_status()
@@ -1160,6 +1181,7 @@ _PATH_FOLD_CACHE_MAX = 64
 
 
 def _cache_fold(key: tuple[str, str], doc: dict[str, Any]) -> None:
+    """Cache a completed turn's folded doc, evicting the oldest entry when full."""
     if len(_PATH_FOLD_CACHE) >= _PATH_FOLD_CACHE_MAX:
         _PATH_FOLD_CACHE.pop(next(iter(_PATH_FOLD_CACHE)))
     _PATH_FOLD_CACHE[key] = json.dumps(doc, default=str)
@@ -1235,6 +1257,7 @@ async def record_turn_graph_delta(
 async def read_turn_graph_delta(
     conversation_id: str, turn_id: str
 ) -> dict[str, list]:
+    """Read the graph delta (nodes/edges) one turn added, or empty."""
     async with _client() as c:
         r = await c.get(f"/get/{_k(conversation_id, f'turn_graph:{turn_id}')}")
         r.raise_for_status()
@@ -1312,6 +1335,7 @@ async def resolve_prior_context(
 
 
 async def get_meta(conversation_id: str) -> dict[str, Any]:
+    """Read the conversation meta dict (title, timestamps, turn_count)."""
     async with _client() as c:
         r = await c.get(f"/get/{_k(conversation_id, 'meta')}")
         r.raise_for_status()
@@ -1457,6 +1481,7 @@ async def hydrate(conversation_id: str) -> dict[str, Any]:
 
 
 async def ping() -> bool:
+    """Cheap Redis connectivity check for /health."""
     try:
         async with _client() as c:
             r = await c.get("/ping")

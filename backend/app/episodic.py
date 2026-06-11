@@ -1,34 +1,10 @@
-"""L2 EPISODIC memory — fuzzy semantic recall of OLD turns (doc 09 §3.3, Phase D).
+"""L2 episodic memory: fuzzy semantic recall of old turns via Upstash Vector.
 
-This is the third memory tier. L1 is the LangGraph turn state, L3 is the exact
-Redis `state_doc` (the SSOT for same-conversation recall). L2 sits between them:
-ONE structured episode per turn, stored in a SEPARATE Upstash Vector index
-(distinct from the Upstash Redis used everywhere else), for the "what did we
-find about X a while ago" question on a long investigation.
-
-What it is NOT (doc 09 §10 anti-patterns):
-  - NOT exact enumeration. "List the leads from turn 3" is an exact L3 filter via
-    recall_state, never a similarity query. recall_memory is fuzzy recall only.
-  - NOT a prose-scraping write. The episode is built DETERMINISTICALLY from the
-    turn's STRUCTURED outputs (registry entities, sanctions verdicts, claims
-    text, tools used) — never by NLP-parsing the prose answer (the HaluMem trap).
-
-Graceful no-op contract (the whole point of this module being flag-gated):
-  - `is_enabled()` is True ONLY when the feature flag is on AND both vector creds
-    are present. Everything routes through it.
-  - `write_episode` no-ops (returns False) when disabled, so finalize never
-    blocks and the live demo is unaffected until provisioning + flag flip.
-  - `query_episodes` returns a structured `{"configured": False, ...}` result
-    when disabled, so the recall_memory tool can tell the agent to fall back to
-    recall_state instead of erroring.
-  - Every Upstash call is wrapped so a transient vector outage degrades to a
-    no-op rather than failing a turn.
-
-Embedding approach: Upstash Vector's HOSTED embedding model. The index is
-created WITH a model (e.g. bge / mixedbread), so we upsert and query RAW TEXT
-(`data=`) and Upstash vectorizes it server-side. That means NO separate
-embedding provider or API key — one fewer secret to manage, and nothing new to
-mock for the disabled-path tests.
+One structured episode per turn, built deterministically from the turn's
+structured outputs (never prose), for the "what did we find about X a while ago"
+question. Flag-gated and fully no-op when disabled, so the live demo is untouched
+until provisioning. Upserts raw text so Upstash's hosted model embeds it server
+side, with no separate embedding key to manage.
 """
 
 from __future__ import annotations

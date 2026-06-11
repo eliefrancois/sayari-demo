@@ -1,17 +1,9 @@
-"""OpenSanctions data layer.
+"""OpenSanctions data layer: a thin async client over /match/default.
 
-Thin async client over the public /match/default endpoint. We use this to
-answer one question per call: "does this name appear on any global sanctions,
-PEP, debarment, or watchlist?"
-
-Why async: the agent loop is async (so we can stream events back over SSE
-without blocking). A blocking httpx.get() would freeze the whole investigation
-during what's typically a 200-500ms call.
-
-Why no retries / no exotic error handling in v1: OpenSanctions is reliable
-enough that exceptions are signal, not noise. We log and return an empty
-list rather than fail the whole investigation — a missing sanctions check
-is recoverable; a thrown exception kills the entire SSE stream.
+Each call answers one question: does this name appear on any global sanctions,
+PEP, debarment, or watchlist? Errors are logged and return an empty list rather
+than fail the investigation, since a missing check is recoverable but a thrown
+exception would kill the whole SSE stream.
 """
 
 from __future__ import annotations

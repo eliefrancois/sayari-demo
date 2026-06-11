@@ -1,3 +1,4 @@
+// World-map lens drawing entity trade lanes as risk-colored arcs between country centroids.
 "use client";
 
 import { useMemo, useState } from "react";

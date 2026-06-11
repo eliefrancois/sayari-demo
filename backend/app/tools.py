@@ -1,22 +1,9 @@
-"""Tool layer — the agent's capabilities.
+"""Tool layer: the agent's capabilities and the API surface Claude sees.
 
-This file is the API surface Claude sees. Three things live here:
-
-1. Tool IMPLEMENTATIONS — thin Python functions that compose graph.py and
-   sanctions.py into agent-friendly shapes. They handle small adapters
-   (e.g. ICIJ label -> OpenSanctions schema) so the data layer stays pure.
-
-2. Tool DESCRIPTORS (the `TOOLS` constant) — the JSON shapes passed to the
-   Anthropic API. Each has a name, description, and JSON-schema input. The
-   description is the single most important field in this file: it's what
-   Claude reads to decide WHICH tool to call. Write them carefully.
-
-3. A DISPATCHER (`execute_tool`) — the agent loop calls this with whatever
-   tool_use block Claude returned. Returns a JSON-safe dict for tool_result.
-
-When Sayari's interviewer asks "how do you tell the agent what to do?"
-the answer is "by writing the descriptions in this file." Not the system
-prompt, not magic — descriptions.
+Three things live here: the tool implementations (thin functions over graph.py
+and sanctions.py), the tool descriptors in `TOOLS` (the JSON the Anthropic API
+reads to pick a tool, the most important field in the file), and the dispatcher
+`execute_tool` that runs whatever tool_use block Claude returned.
 """
 
 from __future__ import annotations
@@ -51,6 +38,7 @@ def _label_to_sanctions_schema(label: str) -> str:
 
 
 def search_entity_tool(name: str, limit: int = 10) -> dict[str, Any]:
+    """Full-text ICIJ search for `name`, returned as agent-friendly nodes."""
     res: SearchResults = graph.search_entity(name, limit=limit)
     # Echo the original query in the metadata so the agent can compare
     # the user's intent to the actual matches when deciding found vs not-found.
@@ -62,6 +50,7 @@ def search_entity_tool(name: str, limit: int = 10) -> dict[str, Any]:
 
 
 def get_relationships_tool(node_id: str, limit: int = 50) -> dict[str, Any]:
+    """The 1-hop ICIJ neighborhood of a node as nodes + edges."""
     nb: Neighborhood = graph.get_relationships(node_id, limit=limit)
     return {
         "nodes": [n.model_dump() for n in nb.nodes],
@@ -71,6 +60,7 @@ def get_relationships_tool(node_id: str, limit: int = 50) -> dict[str, Any]:
 
 
 def get_officers_tool(entity_id: str, limit: int = 50) -> dict[str, Any]:
+    """Officers of an ICIJ Entity as nodes + officer_of edges."""
     nb: Neighborhood = graph.get_officers(entity_id, limit=limit)
     return {
         "nodes": [n.model_dump() for n in nb.nodes],
@@ -80,6 +70,7 @@ def get_officers_tool(entity_id: str, limit: int = 50) -> dict[str, Any]:
 
 
 def find_address_connections_tool(node_id: str, limit: int = 20) -> dict[str, Any]:
+    """Nodes sharing a registered address with this one (cross-leak proxy)."""
     nb: Neighborhood = graph.find_address_connections(node_id, limit=limit)
     return {
         "nodes": [n.model_dump() for n in nb.nodes],
@@ -89,6 +80,7 @@ def find_address_connections_tool(node_id: str, limit: int = 20) -> dict[str, An
 
 
 def find_er_links_tool(node_id: str, limit: int = 20) -> dict[str, Any]:
+    """Cross-leak entity-resolution links for a node (ICIJ ER edges)."""
     nb: Neighborhood = graph.find_er_links(node_id, limit=limit)
     return {
         "nodes": [n.model_dump() for n in nb.nodes],
@@ -98,6 +90,7 @@ def find_er_links_tool(node_id: str, limit: int = 20) -> dict[str, Any]:
 
 
 async def check_sanctions_tool(name: str, schema: str = "Person") -> dict[str, Any]:
+    """Screen `name` against OpenSanctions, flagging any strong watchlist match."""
     hits: list[SanctionsHit] = await sanctions.check_sanctions(name, schema=schema)
     return {
         "name_searched": name,
@@ -120,6 +113,7 @@ async def sayari_resolve_tool(
     type: str | None = None,
     limit: int = 10,
 ) -> dict[str, Any]:
+    """Resolve `name` to ranked Sayari candidates (leads, not a final answer)."""
     candidates = await asyncio.to_thread(
         sayari.resolve, name, address, country, type, limit
     )
@@ -202,6 +196,7 @@ async def _resolve_and_map_risk_paths(
 async def sayari_profile_tool(
     entity_id: str, conversation_id: str | None = None
 ) -> dict[str, Any]:
+    """Full Sayari profile of the primary subject, with a named risk-path overlay."""
     raw = await asyncio.to_thread(sayari.profile, entity_id)
     slim = slim_sayari_profile(raw)
     # Name the risk-path nodes from data already in hand: the profile's own
@@ -229,6 +224,7 @@ async def sayari_ownership_tool(
     direction: str = "downstream",
     limit: int = 25,
 ) -> dict[str, Any]:
+    """Sayari ownership/control traversal (upstream UBOs or downstream holdings)."""
     raw = await asyncio.to_thread(sayari.ownership, entity_id, direction, limit)
     root_label = raw.get("name") or entity_id
     nb: Neighborhood = sayari.ownership_to_neighborhood(
@@ -243,6 +239,7 @@ async def sayari_ownership_tool(
 
 
 async def sayari_search_tool(query: str, limit: int = 10) -> dict[str, Any]:
+    """Broad/fuzzy Sayari lead-gen search, with the top leads seeded onto the canvas."""
     candidates = await asyncio.to_thread(sayari.search, query, limit)
     # Light graph mapping: only the top few RELEVANT leads become nodes so a
     # broad search seeds the canvas without flooding it or pinning off-type
@@ -299,6 +296,7 @@ async def sayari_search_tool(query: str, limit: int = 10) -> dict[str, Any]:
 async def sayari_summary_tool(
     entity_id: str, conversation_id: str | None = None
 ) -> dict[str, Any]:
+    """Cheaper, relationship-free Sayari profile for secondary entities."""
     raw = await asyncio.to_thread(sayari.summary, entity_id)
     slim = slim_sayari_profile(raw)
     # entity_summary is relationship-free, so the profile carries no relationships
@@ -321,6 +319,7 @@ async def sayari_summary_tool(
 
 
 async def sayari_watchlist_tool(entity_id: str, limit: int = 10) -> dict[str, Any]:
+    """Indirect PEP/watchlist exposure up and down the ownership chain."""
     raw = await asyncio.to_thread(sayari.watchlist, entity_id, limit)
     root_label = raw.get("name") or entity_id
     nb: Neighborhood = sayari.watchlist_to_neighborhood(raw, entity_id, str(root_label))
@@ -437,6 +436,7 @@ async def sayari_shortest_path_tool(
 
 
 async def sayari_record_tool(record_id: str) -> dict[str, Any]:
+    """Document-level source record behind a Sayari fact (provenance)."""
     raw = await asyncio.to_thread(sayari.record, record_id)
     return {
         "record": slim_sayari_record(raw),

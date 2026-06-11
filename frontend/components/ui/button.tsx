@@ -1,3 +1,4 @@
+// shadcn/base-ui primitive: button + variant definitions.
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
 

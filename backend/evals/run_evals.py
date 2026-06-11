@@ -1,31 +1,9 @@
-"""Regression eval harness for the LangGraph agent.
+"""Regression eval harness for the LangGraph agent, seeded from bugs we actually hit.
 
-Seeded from bugs we actually hit during the build, so a green run means those
-regressions stay fixed:
-
-  - terminator routing (conversational-by-default): "hello" answers; a named
-    subject now ALSO finishes with submit_answer (not an auto-emitted report) and
-    sets report_ready when a signal is found; only an EXPLICIT "compile a report"
-    request produces submit_summary.
-  - sanctions gate: Epstein must NOT carry a `sanctioned` signal or a confirmed
-    watchlist hit (the on_watchlist gate fix); Roldugin — actually sanctioned —
-    must keep the signal.
-  - not-found honesty: a nonsense subject must return found=false with no claims
-    (anti-hallucination).
-  - clarify routing: a vague objective must ask clarification questions instead
-    of guessing.
-  - provenance: every claim must carry >=1 source_ref.
-  - boundary: a question we have no tool for ("most common address") must not
-    fabricate an aggregate. (Tightens once find_hub_addresses lands.)
-
-Each evaluator asserts on the STRUCTURED output of `agent_graph.evaluate_turn`
-(which returns the final graph state directly — no SSE/Redis), so the checks
-are deterministic.
-
-Usage (from backend/, with the venv):
-  .venv/bin/python -m evals.run_evals            # run locally, print a table
-  .venv/bin/python -m evals.run_evals --push     # also upload to LangSmith
-                                                  # (needs LANGCHAIN_API_KEY)
+Each evaluator asserts on the structured output of `agent_graph.evaluate_turn`
+(the final graph state, no SSE/Redis), covering terminator routing, the sanctions
+gate, not-found honesty, clarify routing, provenance, and tool boundaries. Run
+with `-m evals.run_evals` (live) or `--deterministic-only` (no API spend).
 """
 
 from __future__ import annotations
@@ -46,34 +24,41 @@ Evaluator = Callable[[dict[str, Any]], tuple[bool, str]]
 
 
 def _result(out: dict[str, Any]) -> dict[str, Any]:
+    """The terminator result payload from an evaluate_turn output."""
     return out.get("result") or {}
 
 
 def terminator_answer(out: dict[str, Any]) -> tuple[bool, str]:
+    """Turn finished with the lightweight submit_answer terminator."""
     return out["kind"] == "answer", f"kind={out['kind']}"
 
 
 def terminator_summary(out: dict[str, Any]) -> tuple[bool, str]:
+    """Turn finished with the formal submit_summary terminator."""
     return out["kind"] == "summary", f"kind={out['kind']}"
 
 
 def found_true(out: dict[str, Any]) -> tuple[bool, str]:
+    """The result is marked found."""
     r = _result(out)
     return bool(r.get("found")), f"found={r.get('found')}"
 
 
 def not_found(out: dict[str, Any]) -> tuple[bool, str]:
+    """A summary turn that honestly reports found=false."""
     r = _result(out)
     ok = out["kind"] == "summary" and r.get("found") is False
     return ok, f"kind={out['kind']}, found={r.get('found')}"
 
 
 def no_claims(out: dict[str, Any]) -> tuple[bool, str]:
+    """No claims were emitted (anti-hallucination on not-found turns)."""
     n = len(_result(out).get("claims", []))
     return n == 0, f"claims={n}"
 
 
 def provenance(out: dict[str, Any]) -> tuple[bool, str]:
+    """Every claim carries at least one source_ref."""
     claims = _result(out).get("claims", [])
     ok = all(len(c.get("source_refs", [])) >= 1 for c in claims)
     return ok, f"{len(claims)} claims, all sourced={ok}"
@@ -248,6 +233,7 @@ def name_match_hedged(out: dict[str, Any]) -> tuple[bool, str]:
 
 
 def clarification_present(out: dict[str, Any]) -> tuple[bool, str]:
+    """An answer turn that asks at least one clarification question."""
     r = _result(out)
     q = r.get("clarification_questions", [])
     ok = out["kind"] == "answer" and len(q) >= 1
@@ -308,19 +294,23 @@ def report_ready_false(out: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _used(out: dict[str, Any], name: str) -> tuple[bool, str]:
+    """Whether the turn called a given tool."""
     tools = out.get("tools_used", [])
     return name in tools, f"tools={','.join(tools) or 'none'}"
 
 
 def used_sayari_search(out: dict[str, Any]) -> tuple[bool, str]:
+    """The turn ran sayari_search."""
     return _used(out, "sayari_search")
 
 
 def used_sayari_watchlist(out: dict[str, Any]) -> tuple[bool, str]:
+    """The turn ran sayari_watchlist."""
     return _used(out, "sayari_watchlist")
 
 
 def used_sayari_record(out: dict[str, Any]) -> tuple[bool, str]:
+    """The turn ran sayari_record."""
     return _used(out, "sayari_record")
 
 
@@ -1262,6 +1252,7 @@ async def _episodic_enabled_mock_rows() -> list[tuple[str, str, bool, str]]:
 async def _run_local(
     model: str | None = None, deterministic_only: bool = False
 ) -> int:
+    """Run the deterministic checks (and optionally the live cases) and print a table."""
     if deterministic_only:
         print("Running DETERMINISTIC checks only (no live LLM, no API spend)...\n")
     else:
@@ -1437,6 +1428,7 @@ async def _run_langsmith(model: str | None = None) -> int:
 
 
 def main() -> None:
+    """CLI entry point: parse flags and run the evals locally or against LangSmith."""
     parser = argparse.ArgumentParser(description="Run the agent regression evals.")
     parser.add_argument(
         "--push",

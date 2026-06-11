@@ -1,3 +1,4 @@
+// prompt-kit primitive: assorted animated loading indicators.
 "use client"
 
 import { cn } from "@/lib/utils"

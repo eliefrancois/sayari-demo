@@ -1,3 +1,4 @@
+// Inline source-citation chip rendering a claim's provenance per source system.
 "use client";
 
 import { ExternalLink, FileText } from "lucide-react";

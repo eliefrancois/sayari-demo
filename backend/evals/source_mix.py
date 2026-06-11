@@ -1,32 +1,10 @@
-"""Source-mix regression evals: the router can never strand corroboration.
+"""Source-mix regression evals: the intent router can never strand cross-source corroboration.
 
-The system prompt MANDATES a cross-source corroboration step (Process step 4):
-check_sanctions (OpenSanctions) for DIRECT watchlist listing and search_entity
-(ICIJ) for leak provenance. But the intent router narrows the bound toolset per
-turn, and before this fix most narrowed subsets excluded one or both of those
-tools — so a CONFIDENT classification guaranteed a Sayari-only turn where the
-agent literally could not execute the step its own prompt orders. (It only
-worked when confidence dipped below _CONFIDENCE_FLOOR and the full set bound.)
-
-These checks pin the fix, deterministically (pure import-and-inspect, no
-network, no credits):
-
-  1. Every narrowed (non-meta) intent subset includes the corroboration set —
-     check_sanctions AND search_entity.
-  2. The actual binding path (`select_tool_names`) returns both tools for a
-     HIGH-confidence classification of each previously-stranded intent, i.e.
-     the exact code path that used to produce Sayari-only turns.
-  3. The per-intent guidance for those intents names both corroboration tools,
-     so the narrowed prompt also TELLS the agent to use them.
-
-There is also an OPTIONAL live check (--live): an identify/profile turn on a
-leak-relevant subject must produce at least one non-Sayari tool call or
-non-Sayari source_ref. It is skipped by default and when creds are absent,
-because it burns ~60-90s of live API time.
-
-Usage (from backend/, with the venv):
-  .venv/bin/python -m evals.source_mix          # deterministic only
-  .venv/bin/python -m evals.source_mix --live   # + one live agent turn
+The prompt mandates corroboration (check_sanctions + search_entity), but narrowing
+the toolset per turn used to drop those tools on a confident classification. These
+deterministic checks pin that every narrowed subset, the real binding path, and the
+per-intent guidance all keep the corroboration set. An optional `--live` check runs
+one real agent turn to confirm a narrowed turn actually crosses sources.
 """
 
 from __future__ import annotations
@@ -51,6 +29,7 @@ _NARROWED_INTENTS = (
 
 
 def source_mix_rows() -> list[Row]:
+    """The deterministic corroboration checks (subset, binding path, guidance)."""
     case = "source_mix"
     rows: list[Row] = []
 
@@ -108,6 +87,7 @@ _NON_SAYARI_TOOLS = {
 
 
 def _live_creds_present() -> bool:
+    """Whether all creds needed for the optional live turn are set."""
     from app.config import get_settings
 
     s = get_settings()
@@ -154,6 +134,7 @@ async def live_source_mix_rows() -> list[Row]:
 
 
 def _print_table(rows: list[Row]) -> int:
+    """Print the results table and return an exit code (0 if all passed)."""
     total = len(rows)
     passed = sum(int(r[2]) for r in rows)
     print("=" * 78)
@@ -168,6 +149,7 @@ def _print_table(rows: list[Row]) -> int:
 
 
 def main() -> None:
+    """CLI entry point: run the deterministic checks, plus the live turn with --live."""
     parser = argparse.ArgumentParser(description="Source-mix corroboration evals.")
     parser.add_argument(
         "--live",

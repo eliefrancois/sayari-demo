@@ -11,6 +11,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """App settings, loaded from environment variables and .env."""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -87,12 +89,11 @@ class Settings(BaseSettings):
 
 
 def apply_langsmith_env(settings: "Settings") -> bool:
-    """Propagate LangSmith settings into os.environ.
+    """Mirror LANGCHAIN_* back into os.environ so LangChain tracing turns on.
 
-    LangChain reads LANGCHAIN_* from the process environment, but pydantic-
-    settings only loads them into the Settings object (especially when they come
-    from a .env file). Mirror them back so tracing turns on. Returns whether
-    tracing is active."""
+    pydantic-settings loads these into the Settings object but LangChain reads
+    them from the process environment. Returns whether tracing is active.
+    """
     if settings.langchain_tracing_v2 and settings.langchain_api_key:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
         os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
@@ -104,4 +105,5 @@ def apply_langsmith_env(settings: "Settings") -> bool:
 
 @lru_cache
 def get_settings() -> Settings:
+    """Cached singleton of the parsed settings."""
     return Settings()

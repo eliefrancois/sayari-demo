@@ -1,3 +1,4 @@
+// Formal risk memo card: claims, sanctions hits, Sayari risk factors, follow-ups, and PDF export.
 "use client";
 
 import { useMemo, useRef, useState } from "react";

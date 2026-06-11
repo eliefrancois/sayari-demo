@@ -1,28 +1,10 @@
-"""Deterministic branching evals (Stage 2a: the conversation turn tree).
+"""Deterministic branching evals: the path-scoped conversation turn tree (Stage 2a).
 
-Branching is the riskiest change to the memory core so far: the state_doc stops
-being one merged blob and becomes a PATH-SCOPED fold of per-turn deltas. These
-checks pin the three properties that make that safe, with no Redis, no live
-model, and no credits — the same discipline as evals/multiturn.py:
-
-  1. FORK ISOLATION: two sibling branches forked from the same parent each see
-     the parent's state but NEVER each other's deltas. Asserted through the
-     pure path assembler (`conversations.assemble_state_doc`, a fold of the
-     SAME `_apply_delta` production persists) AND through the real
-     `recall_state` tool reading a path-scoped doc, AND through the live
-     `turn_scope` contextvar wiring of `conversations.get_state_doc`.
-
-  2. PATH GRAPH ACCUMULATION: the evidence graph at turn N on a path is the
-     union of THAT path's per-turn graph deltas only (the time-travel payload),
-     with the turn's own delta kept separate for the frontend pulse/dim.
-
-  3. LINEAR REGRESSION: a conversation that never forks produces a path-folded
-     state_doc byte-identical to the pre-change merged-doc behavior (the
-     iterative `_apply_delta` read-modify-write), including mid-turn named_ids
-     merges and the chained prose digest.
-
-Each turn's delta comes from the real `agent_graph._build_state_delta`
-projection, so the write path under test is production's, not a stand-in.
+Pins the three properties that make path-scoped state safe, with no Redis, model,
+or credits: fork isolation (siblings never see each other's deltas), path graph
+accumulation (a turn's graph is its path's deltas only), and linear regression
+(a never-forking conversation folds byte-identical to the old merged doc). Each
+delta comes from the real `agent_graph._build_state_delta`, not a stand-in.
 """
 
 from __future__ import annotations
@@ -44,6 +26,7 @@ Row = tuple[str, str, bool, str]
 
 
 def _hit(name: str, sid: str) -> SanctionsHit:
+    """A confirmed OFAC SDN test hit for the given name and id."""
     return SanctionsHit(
         name_searched="Rosneft",
         matched_name=name,
@@ -83,6 +66,7 @@ def _turn_delta(
 
 
 def _node(nid: str, name: str) -> dict[str, Any]:
+    """A minimal Sayari graph node fixture."""
     return {
         "id": nid, "name": name, "label": "Entity", "source_system": "sayari",
         "properties": {"sanctioned": False, "pep": False, "countries": ["RUS"]},
