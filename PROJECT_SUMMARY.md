@@ -1,5 +1,7 @@
 # Entity Risk Resolver: Sayari FDE Take-Home
 
+For the submitted 1-2 page report, see [SUBMISSION_REPORT.md](./SUBMISSION_REPORT.md).
+
 <p align="center">
   <img src="assets/sayari-logo.png" alt="Sayari" width="200" />
 </p>

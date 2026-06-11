@@ -8,7 +8,7 @@ An investigative copilot. You give it a person or a company, it investigates acr
 
 The data spine is Sayari for authoritative ownership and UBO traversal, ICIJ Offshore Leaks for leak provenance, and OpenSanctions for watchlist screening. The UX is a branching investigation canvas instead of a linear chat, because real investigations fork and double back. Built end-to-end as a Sayari FDE take-home.
 
-For the full writeup (design decisions, the memory bug I found and fixed, and the two-model eval results) see [`PROJECT_SUMMARY.md`](PROJECT_SUMMARY.md).
+For the submitted 1-2 page report, see [`SUBMISSION_REPORT.md`](SUBMISSION_REPORT.md). For the full writeup (design decisions, the memory bug I found and fixed, and the two-model eval results) see [`PROJECT_SUMMARY.md`](PROJECT_SUMMARY.md).
 
 ## Architecture
 
