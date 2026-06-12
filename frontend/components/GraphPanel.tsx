@@ -290,6 +290,13 @@ function GraphPanelInner({
 }: GraphPanelProps) {
   const reactFlow = useReactFlow();
 
+  // Drill-down: when set, the view is isolated to this node plus its 1-hop
+  // neighbors (both directions) over the loaded edges. Pure client-side view
+  // filter, layered into visibleNodes/visibleEdges alongside the legend's
+  // hiddenLabels filter so the two compose. Cleared via the context menu, the
+  // top-left chip, or automatically when the node leaves the graph.
+  const [isolatedNodeId, setIsolatedNodeId] = useState<string | null>(null);
+
   // Only show the broad-search badge when there are genuinely more leads than
   // are pinned to the canvas (a top-N subset of a wider lead list).
   const showLeadsBadge =
@@ -318,14 +325,40 @@ function GraphPanelInner({
     [nodes, overlayNodes]
   );
 
+  // The 1-hop isolation set: the isolated node plus every node directly
+  // connected to it (source OR target) over the currently-loaded edges. Null
+  // when isolation is off. Computed over `edges` (not effectiveNodes) so it
+  // reflects real graph connectivity, not the transient lead overlay.
+  const isolatedIds = useMemo(() => {
+    if (!isolatedNodeId) return null;
+    const ids = new Set<string>([isolatedNodeId]);
+    for (const e of edges) {
+      if (e.source === isolatedNodeId) ids.add(e.target);
+      else if (e.target === isolatedNodeId) ids.add(e.source);
+    }
+    return ids;
+  }, [isolatedNodeId, edges]);
+
   const visibleNodes = useMemo(() => {
-    if (!hiddenLabels?.size) return effectiveNodes;
-    return effectiveNodes.filter((n) => !hiddenLabels.has(n.label));
-  }, [effectiveNodes, hiddenLabels]);
+    let result = effectiveNodes;
+    if (hiddenLabels?.size) result = result.filter((n) => !hiddenLabels.has(n.label));
+    if (isolatedIds) result = result.filter((n) => isolatedIds.has(n.id));
+    return result;
+  }, [effectiveNodes, hiddenLabels, isolatedIds]);
 
   const visibleNodeIds = useMemo(
     () => new Set(visibleNodes.map((n) => n.id)),
     [visibleNodes]
+  );
+
+  // The node we're isolated on (for the top-left chip). Null when off or when
+  // the node has left the graph (an effect below also clears the state).
+  const isolatedNode = useMemo(
+    () =>
+      isolatedNodeId
+        ? effectiveNodes.find((n) => n.id === isolatedNodeId) ?? null
+        : null,
+    [isolatedNodeId, effectiveNodes]
   );
 
   // Which data sources are present, for the provenance legend.
@@ -351,11 +384,23 @@ function GraphPanelInner({
   );
 
   const visibleEdges = useMemo(() => {
-    if (!hiddenLabels?.size) return edges;
-    return edges.filter(
-      (e) => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target)
-    );
-  }, [edges, hiddenLabels, visibleNodeIds]);
+    let result = edges;
+    // Isolation keeps only the direct-connection paths: edges incident to the
+    // isolated node. Neighbor-to-neighbor edges are not direct paths, so drop.
+    if (isolatedNodeId) {
+      result = result.filter(
+        (e) => e.source === isolatedNodeId || e.target === isolatedNodeId
+      );
+    }
+    // Drop edges whose endpoints aren't both visible (legend filter or
+    // isolation may have hidden one side). No-op when no filter is active.
+    if (hiddenLabels?.size || isolatedIds) {
+      result = result.filter(
+        (e) => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target)
+      );
+    }
+    return result;
+  }, [edges, isolatedNodeId, isolatedIds, hiddenLabels, visibleNodeIds]);
 
   // Persisted across renders so user drags survive sim restarts and so new
   // sims warm-start from the prior layout (avoiding the "everything explodes
@@ -568,6 +613,17 @@ function GraphPanelInner({
     return () => window.clearTimeout(t);
   }, [focusRequest, reactFlow]);
 
+  // Keep isolation sane across graph changes: if the isolated node is no longer
+  // in the persistent graph (new investigation, or the node was removed), drop
+  // the isolation and restore the full view. While the node still exists, the
+  // 1-hop set recomputes from the latest edges, so streaming neighbors are
+  // picked up without surprising the user.
+  useEffect(() => {
+    if (isolatedNodeId && !nodes.some((n) => n.id === isolatedNodeId)) {
+      setIsolatedNodeId(null);
+    }
+  }, [nodes, isolatedNodeId]);
+
   // Apply highlight (traversal path / claim hover), pinned-context cues, and
   // the time-travel scope as style overlays. Highlight is a neutral
   // foreground glow — color stays reserved for risk + source — and wins over
@@ -711,6 +767,26 @@ function GraphPanelInner({
       {/* Radial vignette fading the grid toward the pane edges (spec §1). */}
       <div className="canvas-vignette pointer-events-none absolute inset-0 z-4" />
 
+      {/* Isolation chip (top-left): shows the focused node and an obvious clear. */}
+      {isolatedNode && (
+        <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1 text-[10px] shadow-sm">
+          <span className="font-mono uppercase tracking-[0.14em] text-muted-foreground">
+            Isolated
+          </span>
+          <span className="max-w-[160px] truncate font-medium text-foreground">
+            {isolatedNode.name}
+          </span>
+          <button
+            type="button"
+            onClick={() => setIsolatedNodeId(null)}
+            title="Clear isolation and show the full graph"
+            className="cursor-pointer rounded text-muted-foreground transition-colors hover:text-foreground"
+          >
+            × Clear
+          </button>
+        </div>
+      )}
+
       {showLeadsBadge && (
         <button
           type="button"
@@ -824,6 +900,15 @@ function GraphPanelInner({
         <NodeContextMenu
           menu={menu}
           isPinned={pinnedNodeIds?.has(menu.node.id) ?? false}
+          isIsolated={isolatedNodeId === menu.node.id}
+          onIsolate={() => {
+            setIsolatedNodeId(menu.node.id);
+            setMenu(null);
+          }}
+          onClearIsolation={() => {
+            setIsolatedNodeId(null);
+            setMenu(null);
+          }}
           onOpenDetail={
             onOpenDetail
               ? () => {
@@ -905,6 +990,9 @@ const MENU_OPTIONS: { kind: ExpandKind; label: string; appliesTo: NodeLabel[] | 
 function NodeContextMenu({
   menu,
   isPinned,
+  isIsolated,
+  onIsolate,
+  onClearIsolation,
   onOpenDetail,
   onExpand,
   onTogglePin,
@@ -912,6 +1000,9 @@ function NodeContextMenu({
 }: {
   menu: NonNullable<ContextMenuState>;
   isPinned: boolean;
+  isIsolated: boolean;
+  onIsolate: () => void;
+  onClearIsolation: () => void;
   onOpenDetail?: () => void;
   onExpand: (kind: ExpandKind) => void;
   onTogglePin: () => void;
@@ -950,6 +1041,14 @@ function NodeContextMenu({
             className="block w-full cursor-pointer px-3 py-1.5 text-left font-medium text-foreground hover:bg-muted"
           >
             {isPinned ? "Unpin from chat context" : "Add to chat context"}
+          </button>
+        </li>
+        <li className="border-b border-border">
+          <button
+            onClick={isIsolated ? onClearIsolation : onIsolate}
+            className="block w-full cursor-pointer px-3 py-1.5 text-left font-medium text-foreground hover:bg-muted"
+          >
+            {isIsolated ? "Clear isolation" : "Isolate connections"}
           </button>
         </li>
         {applicable.map((o) => (

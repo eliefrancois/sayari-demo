@@ -166,6 +166,14 @@ def _is_weak_name(name: str | None, node_id: str) -> bool:
     n = name.strip()
     if not n or n == node_id or n == "(unnamed)":
         return True
+    # An all-digit label is never a real display name: it's a raw numeric
+    # identifier (e.g. a 10-digit zero-padded SEC CIK that arrives as the `label`
+    # on a person/officer hop out of an ownership traversal), so treat it as weak
+    # and let the bounded resolver fetch the real name. Note _is_weak_name's
+    # id-echo checks below only catch a label equal to the node id; a CIK differs
+    # from the base64 node id, so without this it would slip through as "named".
+    if n.isdigit():
+        return True
     if n.startswith("…") and node_id.endswith(n[1:]):
         return True
     if n.startswith("Unresolved entity"):
@@ -181,13 +189,20 @@ def _resolve_root_label(
     hint: str | None,
     id_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> str:
-    """Pick a display name for a traversal root (ownership/watchlist/shortest_path)."""
+    """Pick a display name for a traversal root (ownership/watchlist/shortest_path).
+
+    Prefers English the same way `_display_name` does: an in-hand id_lookup
+    `translated_label` wins, then a non-weak hint (the traversal's own `name`),
+    then the known label, each transliterated when it's non-Latin Cyrillic."""
+    info = (id_lookup or {}).get(root_id) or {}
+    translated = info.get("translated_label")
+    if translated and str(translated).strip():
+        return str(translated).strip()
     if hint and not _is_weak_name(hint, root_id):
-        return hint.strip()
-    if id_lookup:
-        known = (id_lookup.get(root_id) or {}).get("label")
-        if known and not _is_weak_name(known, root_id):
-            return known
+        return _prefer_latin(hint.strip())
+    known = info.get("label")
+    if known and not _is_weak_name(known, root_id):
+        return _prefer_latin(known)
     return f"…{root_id[-6:]}"
 
 
@@ -211,13 +226,53 @@ def _apply_id_lookup(
         return
     for nid, node in nodes.items():
         info = id_lookup.get(nid) or {}
-        named = info.get("label")
+        named = _display_name(info)
         if named and _is_weak_name(node.name, nid):
             node.name = named
         if node.label == "Other" and info.get("type"):
             coerced = _coerce_label(info.get("type"))
             if coerced != "Other":
                 node.label = coerced  # type: ignore[assignment]
+
+
+def apply_id_lookup_to_neighborhood(
+    nb: Neighborhood, id_lookup: dict[str, dict[str, Any]] | None
+) -> None:
+    """List-form of `_apply_id_lookup`: thread resolved names/labels back onto an
+    already-built Neighborhood's nodes, in place. Lets a caller name nodes AFTER
+    the neighborhood was mapped (e.g. once a bounded follow-up resolve returns)."""
+    if not id_lookup:
+        return
+    node_map = {n.id: n for n in nb.nodes}
+    _apply_id_lookup(node_map, id_lookup)
+    nb.nodes = list(node_map.values())
+
+
+def weak_node_ids(
+    nb: Neighborhood,
+    root_id: str | None = None,
+    id_lookup: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    """Neighborhood node ids whose display name is still weak (missing, a
+    placeholder, or a raw numeric identifier like a SEC CIK) and that the in-hand
+    `id_lookup` can't already name. Excludes the root. Used to feed the bounded
+    follow-up resolver that names officer/person hops the ownership traversal
+    payload left as bare CIK numbers. Order follows node order (stable); the
+    caller's resolve cap bounds how many actually get a follow-up call, so a hub
+    entity (e.g. Tencent) can't explode the call count."""
+    lookup = id_lookup or {}
+    seen: set[str] = set()
+    out: list[str] = []
+    for node in nb.nodes:
+        nid = node.id
+        if not nid or nid == root_id or nid in seen:
+            continue
+        if (lookup.get(nid) or {}).get("label"):
+            continue
+        if _is_weak_name(node.name, nid):
+            seen.add(nid)
+            out.append(nid)
+    return out
 
 
 def related_entity_lookup(raw_profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -243,12 +298,94 @@ def related_entity_lookup(raw_profile: dict[str, Any]) -> dict[str, dict[str, An
             continue
         out[nid] = {
             "label": tgt.get("label"),
+            "translated_label": tgt.get("translated_label"),
             "type": tgt.get("type"),
             "sanctioned": tgt.get("sanctioned"),
             "pep": tgt.get("pep"),
             "countries": tgt.get("countries") or [],
         }
     return out
+
+
+# --- English-preferred display names ---------------------------------------
+# Sayari returns local-language `label`s (Cyrillic for Russian registry
+# entities) plus an English `translated_label` on the SAME payload. Graph nodes
+# should read like an English investigation, so display-name resolution prefers
+# the English translation, then a Latin transliteration of a non-Latin label,
+# then the raw label unchanged. The transliteration map is a minimal
+# Cyrillic->Latin port of frontend/lib/entity-lookup.ts (BGN/PCGN-ish), applied
+# ONLY when the label actually contains Cyrillic so already-Latin text is never
+# mangled.
+
+_CYRILLIC_TO_LATIN: dict[str, str] = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    # Ukrainian / Belarusian extras seen in the demo data.
+    "і": "i", "ї": "yi", "є": "ye", "ґ": "g", "ў": "u",
+}
+
+# The Cyrillic Unicode block (U+0400-U+04FF) covers every char in the map above.
+_CYRILLIC_RE = re.compile("[\u0400-\u04ff]")
+
+
+def _has_cyrillic(s: str) -> bool:
+    """True when the string contains at least one Cyrillic character."""
+    return bool(_CYRILLIC_RE.search(s))
+
+
+def _transliterate(s: str) -> str:
+    """Cyrillic -> Latin, preserving case. A single-char mapping keeps the
+    source case (Г->G, г->g). A digraph from an uppercase letter is fully
+    upper-cased inside an all-caps run (ШЕЛЬФ->SHELF) but title-cased when the
+    next letter is lowercase (Шельф->Shelf), so both registry ALL-CAPS names and
+    Mixed-Case names stay readable. Non-Cyrillic chars pass through untouched."""
+    out: list[str] = []
+    for i, ch in enumerate(s):
+        mapped = _CYRILLIC_TO_LATIN.get(ch.lower())
+        if mapped is None:
+            out.append(ch)
+        elif ch.isupper() and mapped:
+            nxt = s[i + 1] if i + 1 < len(s) else ""
+            if len(mapped) > 1 and nxt.islower():
+                out.append(mapped[0].upper() + mapped[1:])  # Шельф -> Sh...
+            else:
+                out.append(mapped.upper())  # all-caps run / single char
+        else:
+            out.append(mapped)
+    return "".join(out)
+
+
+def _prefer_latin(label: str) -> str:
+    """Transliterate a label ONLY when it actually contains Cyrillic; otherwise
+    return it untouched (never mangle already-Latin text)."""
+    return _transliterate(label) if _has_cyrillic(label) else label
+
+
+def _display_name(ent: Any, fallback_label: str | None = None) -> str | None:
+    """Pick a graph display name for a Sayari entity, preferring English.
+
+    Resolution order (the brief): (1) `translated_label` when present and
+    non-empty, (2) a Latin transliteration of a non-Latin `label`, (3) the raw
+    `label` unchanged. `ent` may be a dict (a `.dict()`'d SDK model or an
+    id_lookup info row) or a raw SDK object. Returns `fallback_label` when
+    neither field is present, so callers keep their existing '(unnamed)'/'…id'
+    placeholders."""
+    if isinstance(ent, dict):
+        translated = ent.get("translated_label")
+        label = ent.get("label")
+    elif ent is not None:
+        translated = getattr(ent, "translated_label", None)
+        label = getattr(ent, "label", None)
+    else:
+        translated = label = None
+    if translated and str(translated).strip():
+        return str(translated).strip()
+    if label and str(label).strip():
+        return _prefer_latin(str(label))
+    return fallback_label
 
 
 def _node(
@@ -273,7 +410,7 @@ def _entity_node(ent: dict[str, Any]) -> GraphNode:
     return _node(
         ent.get("id") or "",
         _label_for_type(ent.get("type")),
-        ent.get("label") or "(unnamed)",
+        _display_name(ent, "(unnamed)") or "(unnamed)",
         properties={
             "type": ent.get("type"),
             "countries": ent.get("countries") or [],
@@ -547,7 +684,7 @@ def relationships_to_neighborhood(
     if not root_id:
         return Neighborhood(nodes=[], edges=[], metadata={"source_system": "sayari", "kind": "relationships"})
 
-    root_label = raw_profile.get("label") or "(unnamed)"
+    root_label = _display_name(raw_profile, "(unnamed)") or "(unnamed)"
     nodes[root_id] = _node(
         root_id,
         _label_for_type(raw_profile.get("type")),
@@ -614,7 +751,7 @@ def profile_officers(raw_profile: dict[str, Any]) -> list[dict[str, Any]]:
         out.append(
             {
                 "entity_id": tgt.get("id"),
-                "name": tgt.get("label") or "(unnamed)",
+                "name": _display_name(tgt, "(unnamed)") or "(unnamed)",
                 "type": tgt.get("type"),
                 "relationship_types": officer_keys,
                 "positions": positions,
@@ -764,6 +901,7 @@ def resolve_unnamed_ids(
             return nid, None
         return nid, {
             "label": label,
+            "translated_label": ent.get("translated_label"),
             "type": ent.get("type"),
             "sanctioned": ent.get("sanctioned"),
             "pep": ent.get("pep"),
@@ -796,7 +934,8 @@ def _risk_path_node(
             props["pep"] = info.get("pep")
         if info.get("countries"):
             props["countries"] = info.get("countries")
-        return _node(nid, _coerce_label(info.get("type")), info["label"], properties=props)
+        name = _display_name(info, info["label"]) or info["label"]
+        return _node(nid, _coerce_label(info.get("type")), name, properties=props)
     # Genuinely unknown: a clearer placeholder than a bare "…id", flagged so the
     # UI/agent can tell this node was not resolved (vs an entity literally named).
     return _node(
@@ -830,7 +969,7 @@ def risk_paths_to_neighborhood(
         nodes[root_id] = _node(
             root_id,
             _label_for_type(slim_profile.get("type")),
-            slim_profile.get("label") or "(unnamed)",
+            _display_name(slim_profile, "(unnamed)") or "(unnamed)",
         )
 
     risk = slim_profile.get("risk") or {}

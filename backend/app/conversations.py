@@ -36,8 +36,11 @@ chain whose folded state is byte-identical to the merged doc:
                                             tree-aware turn lands on a
                                             conversation with pre-tree turns
 
-Every write refreshes the 24h TTL so active conversations don't expire mid-session
-and abandoned ones self-clean. Cross-turn continuity comes from two tiers: the
+Conversation-level keys use a sliding 24h TTL refreshed on every write, so active
+conversations don't expire mid-session and abandoned ones self-clean. Per-turn
+snapshot keys (turn_delta / turn_graph) are written with no TTL so time-travel to
+older turns keeps working; they're cleaned up explicitly by delete_conversation.
+Cross-turn continuity comes from two tiers: the
 compressed prose `context` digest and the structured `state_doc` for exact,
 ID-rich recall, which beats replaying every raw tool_result.
 """
@@ -1134,7 +1137,6 @@ async def _append_turn_delta(
     async with _client() as c:
         await c.post("/pipeline", json=[
             ["RPUSH", key, json.dumps(delta, default=str)],
-            ["EXPIRE", key, str(_TTL_SECONDS)],
         ])
 
 
@@ -1258,7 +1260,7 @@ async def record_turn_graph_delta(
     key = _k(conversation_id, f"turn_graph:{turn_id}")
     async with _client() as c:
         await c.post("/pipeline", json=[
-            ["SET", key, json.dumps(delta, default=str), "EX", str(_TTL_SECONDS)],
+            ["SET", key, json.dumps(delta, default=str)],
         ])
 
 

@@ -193,6 +193,39 @@ async def _resolve_and_map_risk_paths(
     return sayari.risk_paths_to_neighborhood(slim, id_lookup)
 
 
+async def _resolve_and_map_ownership(
+    nb: Neighborhood,
+    root_id: str,
+    id_lookup: dict[str, dict[str, Any]],
+    conversation_id: str | None,
+) -> Neighborhood:
+    """Name ownership-traversal nodes the raw payload left as weak/numeric labels.
+
+    Officer/person hops out of SEC filings arrive with a 10-digit zero-padded CIK
+    as their `label` (the real name is genuinely ABSENT from the traversal
+    payload), so they'd render as bare numbers. Mirror the risk-path resolver:
+    collect the weak-named node ids the in-hand lookup can't name, spend a BOUNDED
+    batch of cheap relationship-free entity_summary calls to name them, and thread
+    the names back onto the nodes. The cap lives in resolve_unnamed_ids
+    (_MAX_RISK_PATH_RESOLUTIONS), so a hub entity (Tencent) can't explode the call
+    count. Newly-resolved names persist to the conversation state_doc (named_ids)
+    so later turns reuse them for free. Best-effort: a failed resolve leaves the
+    existing placeholder, never crashes the traversal."""
+    weak = sayari.weak_node_ids(nb, root_id, id_lookup)
+    if weak:
+        resolved = await asyncio.to_thread(sayari.resolve_unnamed_ids, weak)
+        if resolved:
+            sayari.apply_id_lookup_to_neighborhood(nb, resolved)
+            if conversation_id:
+                try:
+                    await conversations.merge_state_doc(
+                        conversation_id, {"named_ids": resolved}
+                    )
+                except Exception:  # persistence is best-effort, never block naming
+                    log.warning("named_ids persist failed", exc_info=True)
+    return nb
+
+
 async def sayari_profile_tool(
     entity_id: str, conversation_id: str | None = None
 ) -> dict[str, Any]:
@@ -258,6 +291,9 @@ async def sayari_ownership_tool(
     nb: Neighborhood = sayari.ownership_to_neighborhood(
         raw, entity_id, root_label, direction, root_type, id_lookup=known
     )
+    # Officer/person hops out of SEC filings arrive with a raw CIK number as their
+    # label; name them with a bounded follow-up resolve (mirrors risk paths).
+    nb = await _resolve_and_map_ownership(nb, entity_id, known, conversation_id)
     return {
         "nodes": [n.model_dump() for n in nb.nodes],
         "edges": [e.model_dump() for e in nb.edges],
